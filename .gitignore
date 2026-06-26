@@ -1,0 +1,21 @@
+# Backend
+backend/venv/
+backend/__pycache__/
+backend/uploads/
+backend/separated/
+backend/exports/
+backend/tabs/
+backend/*.mp3
+backend/*.wav
+backend/*.mid
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# General
+sample.mp3
