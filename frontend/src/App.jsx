@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = "http://localhost:8000";
@@ -37,6 +37,24 @@ function App() {
   const [eta, setEta] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
+
+  // Auth State
+  const [token, setToken] = useState(localStorage.getItem('token') || null);
+  const [username, setUsername] = useState(localStorage.getItem('username') || null);
+  const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
+  const [authError, setAuthError] = useState('');
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
+  // Admin Panel State
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [userList, setUserList] = useState([]);
+  const [editingUser, setEditingUser] = useState(null);
+  const [editForm, setEditForm] = useState({ username: '', password: '', is_admin: false });
+  const [addForm, setAddForm] = useState({ username: '', password: '', is_admin: false });
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [adminMsg, setAdminMsg] = useState('');
 
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
@@ -88,6 +106,144 @@ function App() {
     return () => clearInterval(interval);
   }, [status, fileId]);
 
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsAuthLoading(true);
+    
+    try {
+      if (isLoginMode) {
+        const formData = new URLSearchParams();
+        formData.append('username', authForm.username);
+        formData.append('password', authForm.password);
+        
+        const res = await fetch(`${API_BASE_URL}/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+          setToken(data.access_token);
+          setUsername(authForm.username);
+          setIsAdmin(data.is_admin || false);
+          localStorage.setItem('token', data.access_token);
+          localStorage.setItem('username', authForm.username);
+          localStorage.setItem('isAdmin', data.is_admin ? 'true' : 'false');
+        } else {
+          setAuthError(data.detail || 'Login failed');
+        }
+      } else {
+        const res = await fetch(`${API_BASE_URL}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(authForm)
+        });
+        const data = await res.json();
+        
+        if (res.ok) {
+          setIsLoginMode(true);
+          setAuthError('Registrasi sukses. Silakan login.');
+        } else {
+          setAuthError(data.detail || 'Registration failed');
+        }
+      }
+    } catch (err) {
+      setAuthError('Terjadi kesalahan jaringan.');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setUsername(null);
+    setIsAdmin(false);
+    setShowAdminPanel(false);
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    localStorage.removeItem('isAdmin');
+    setFile(null);
+    setStatus('idle');
+    if (Tone.Transport.state === 'started') Tone.Transport.stop();
+  };
+
+  // Admin functions
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin/users`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUserList(data);
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    setAdminMsg('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(addForm)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAdminMsg('User berhasil ditambahkan!');
+        setAddForm({ username: '', password: '', is_admin: false });
+        setShowAddForm(false);
+        fetchUsers();
+      } else {
+        setAdminMsg(data.detail || 'Gagal menambahkan user');
+      }
+    } catch (e) { setAdminMsg('Kesalahan jaringan'); }
+  };
+
+  const handleEditUser = async (userId) => {
+    setAdminMsg('');
+    const payload = {};
+    if (editForm.username) payload.username = editForm.username;
+    if (editForm.password) payload.password = editForm.password;
+    if (editForm.is_admin !== undefined) payload.is_admin = editForm.is_admin;
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAdminMsg('User berhasil diperbarui!');
+        setEditingUser(null);
+        fetchUsers();
+      } else {
+        setAdminMsg(data.detail || 'Gagal memperbarui user');
+      }
+    } catch (e) { setAdminMsg('Kesalahan jaringan'); }
+  };
+
+  const handleDeleteUser = async (userId, uname) => {
+    if (!confirm(`Yakin ingin menghapus user "${uname}"?`)) return;
+    setAdminMsg('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAdminMsg('User berhasil dihapus!');
+        fetchUsers();
+      } else {
+        setAdminMsg(data.detail || 'Gagal menghapus user');
+      }
+    } catch (e) { setAdminMsg('Kesalahan jaringan'); }
+  };
+
   const handleFileSelect = (e) => {
     const selectedFile = e.target.files[0];
     if (!selectedFile) return;
@@ -120,6 +276,7 @@ function App() {
     try {
       const uploadRes = await fetch(`${API_BASE_URL}/upload`, {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       });
       const uploadData = await uploadRes.json();
@@ -128,7 +285,10 @@ function App() {
       setProgressText('AI sedang memisahkan instrumen...');
       setFileId(uploadData.file_id);
       
-      await fetch(`${API_BASE_URL}/separate/${uploadData.file_id}`, { method: 'POST' });
+      await fetch(`${API_BASE_URL}/separate/${uploadData.file_id}`, { 
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
     } catch (err) {
       console.error(err);
       setStatus('error');
@@ -155,13 +315,17 @@ function App() {
     try {
       const uploadRes = await fetch(`${API_BASE_URL}/upload`, {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       });
       const uploadData = await uploadRes.json();
       const currentFileId = uploadData.file_id;
       setFileId(currentFileId);
       
-      await fetch(`${API_BASE_URL}/generate_tab_master/${currentFileId}`, { method: 'POST' });
+      await fetch(`${API_BASE_URL}/generate_tab_master/${currentFileId}`, { 
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       
       const pollInterval = setInterval(async () => {
         try {
@@ -322,7 +486,8 @@ function App() {
       const response = await fetch(`${API_BASE_URL}/export/${fileId}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           volumes: volumes,
@@ -357,12 +522,154 @@ function App() {
       <div className="background-glow"></div>
       
       <header className="header">
-        <h1>Jagat <span>Audio</span></h1>
-        <p>AI Stem Separation & Pitch/Tempo Control</p>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: '900px' }}>
+          <div>
+            <h1>Jagat <span>Audio</span></h1>
+            <p>AI Stem Separation & Pitch/Tempo Control</p>
+          </div>
+          {token && (
+            <div className="user-profile">
+              {isAdmin && (
+                <button className="admin-btn" onClick={() => { setShowAdminPanel(!showAdminPanel); if (!showAdminPanel) fetchUsers(); }}>
+                  <Shield size={16} /> Admin
+                </button>
+              )}
+              <span className="welcome-text">Hai, {username}</span>
+              <button className="logout-btn" onClick={handleLogout}>
+                <LogOut size={16} /> Keluar
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       <main className="main-content">
-        {status === 'idle' && (
+        {showAdminPanel && isAdmin ? (
+          <div className="admin-panel glass-panel animate-fade-in">
+            <div className="admin-panel-header">
+              <h2><Shield size={24} /> Manajemen User</h2>
+              <button className="close-admin-btn" onClick={() => setShowAdminPanel(false)}><X size={20} /></button>
+            </div>
+            
+            {adminMsg && <div className={`auth-message ${adminMsg.includes('berhasil') ? 'success' : 'error'}`}>{adminMsg}</div>}
+            
+            <div className="admin-toolbar">
+              <button className="add-user-btn" onClick={() => { setShowAddForm(!showAddForm); setAdminMsg(''); }}>
+                <Plus size={16} /> Tambah User
+              </button>
+            </div>
+            
+            {showAddForm && (
+              <form className="admin-add-form" onSubmit={handleAddUser}>
+                <input type="text" placeholder="Username" value={addForm.username} onChange={e => setAddForm({...addForm, username: e.target.value})} required />
+                <input type="password" placeholder="Password" value={addForm.password} onChange={e => setAddForm({...addForm, password: e.target.value})} required />
+                <label className="admin-checkbox">
+                  <input type="checkbox" checked={addForm.is_admin} onChange={e => setAddForm({...addForm, is_admin: e.target.checked})} />
+                  Admin
+                </label>
+                <button type="submit" className="auth-submit-btn" style={{padding: '0.6rem'}}>Simpan</button>
+              </form>
+            )}
+            
+            <div className="user-table">
+              <div className="user-table-header">
+                <span>ID</span>
+                <span>Username</span>
+                <span>Role</span>
+                <span>Aksi</span>
+              </div>
+              {userList.map(u => (
+                <div className="user-table-row" key={u.id}>
+                  {editingUser === u.id ? (
+                    <>
+                      <span>{u.id}</span>
+                      <input type="text" defaultValue={u.username} onChange={e => setEditForm({...editForm, username: e.target.value})} className="edit-input" />
+                      <label className="admin-checkbox">
+                        <input type="checkbox" defaultChecked={!!u.is_admin} onChange={e => setEditForm({...editForm, is_admin: e.target.checked})} />
+                        Admin
+                      </label>
+                      <div className="row-actions">
+                        <button className="save-btn" onClick={() => handleEditUser(u.id)}>Simpan</button>
+                        <button className="cancel-edit-btn" onClick={() => setEditingUser(null)}>Batal</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span>{u.id}</span>
+                      <span>{u.username}</span>
+                      <span className={u.is_admin ? 'role-admin' : 'role-user'}>{u.is_admin ? 'Admin' : 'User'}</span>
+                      <div className="row-actions">
+                        <button className="edit-btn" onClick={() => { setEditingUser(u.id); setEditForm({ username: u.username, password: '', is_admin: !!u.is_admin }); }}>
+                          <Pencil size={14} />
+                        </button>
+                        <button className="delete-btn" onClick={() => handleDeleteUser(u.id, u.username)}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : !token ? (
+          <div className="auth-card glass-panel animate-fade-in">
+            <h2>{isLoginMode ? 'Masuk ke Akun Anda' : 'Daftar Akun Baru'}</h2>
+            <p className="auth-subtitle">
+              {isLoginMode ? 'Silakan login untuk mulai memisahkan audio.' : 'Buat akun untuk menggunakan fitur AI.'}
+            </p>
+            
+            <form onSubmit={handleAuth} className="auth-form">
+              <div className="input-group">
+                <User className="input-icon" size={20} />
+                <input 
+                  type="text" 
+                  placeholder="Username" 
+                  value={authForm.username}
+                  onChange={(e) => setAuthForm({...authForm, username: e.target.value})}
+                  required
+                />
+              </div>
+              {!isLoginMode && (
+                <div className="input-group">
+                  <Mail className="input-icon" size={20} />
+                  <input 
+                    type="email" 
+                    placeholder="Email" 
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm({...authForm, email: e.target.value})}
+                    required
+                  />
+                </div>
+              )}
+              <div className="input-group">
+                <Lock className="input-icon" size={20} />
+                <input 
+                  type="password" 
+                  placeholder="Password" 
+                  value={authForm.password}
+                  onChange={(e) => setAuthForm({...authForm, password: e.target.value})}
+                  required
+                />
+              </div>
+              
+              {authError && <div className={`auth-message ${authError.includes('sukses') ? 'success' : 'error'}`}>{authError}</div>}
+              
+              <button type="submit" className="auth-submit-btn" disabled={isAuthLoading}>
+                {isAuthLoading ? <Loader2 size={20} className="spinner" /> : (isLoginMode ? 'Sign In' : 'Sign Up')}
+              </button>
+            </form>
+            
+            <p className="auth-toggle">
+              {isLoginMode ? 'Belum punya akun? ' : 'Sudah punya akun? '}
+              <button type="button" onClick={() => {setIsLoginMode(!isLoginMode); setAuthError('');}}>
+                {isLoginMode ? 'Daftar Sekarang' : 'Login di Sini'}
+              </button>
+            </p>
+          </div>
+        ) : (
+          <>
+            {status === 'idle' && (
           <div className="upload-card">
             <div className="upload-area">
               <Upload size={48} className="upload-icon" />
@@ -610,6 +917,8 @@ function App() {
               ))}
             </div>
           </div>
+        )}
+          </>
         )}
       </main>
     </div>

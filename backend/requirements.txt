@@ -3,3 +3,6 @@ uvicorn
 python-multipart
 demucs
 soundfile
+passlib
+bcrypt
+PyJWT

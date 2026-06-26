@@ -1,10 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
 import os
 import shutil
 import subprocess
 import uuid
+from auth import get_password_hash, verify_password, create_access_token, get_current_user
+from database import get_db
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -25,8 +29,150 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Keep track of status
 separation_status = {}
 
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+
+@app.post("/register")
+def register(user: UserCreate):
+    import re
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    if not re.match(email_regex, user.email):
+        raise HTTPException(status_code=400, detail="Format email tidak valid")
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id FROM users WHERE username = ?", (user.username,))
+    if cursor.fetchone():
+        db.close()
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    
+    cursor.execute("SELECT id FROM users WHERE email = ?", (user.email,))
+    if cursor.fetchone():
+        db.close()
+        raise HTTPException(status_code=400, detail="Email sudah terdaftar")
+        
+    hashed_pwd = get_password_hash(user.password)
+    cursor.execute("INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)", (user.username, user.email, hashed_pwd))
+    db.commit()
+    db.close()
+    return {"message": "User registered successfully"}
+
+@app.post("/login")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username, password_hash, is_admin FROM users WHERE username = ?", (form_data.username,))
+    user = cursor.fetchone()
+    db.close()
+    
+    if not user or not verify_password(form_data.password, user['password_hash']):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(data={"sub": user['username']})
+    return {"access_token": access_token, "token_type": "bearer", "is_admin": bool(user['is_admin'])}
+
+@app.get("/me")
+def read_users_me(current_user: dict = Depends(get_current_user)):
+    return {"username": current_user["username"], "is_admin": bool(current_user.get("is_admin", 0))}
+
+# ============================================
+# ADMIN: User Management Routes
+# ============================================
+
+def require_admin(current_user: dict = Depends(get_current_user)):
+    if not current_user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+@app.get("/admin/users")
+def list_users(admin: dict = Depends(require_admin)):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username, is_admin FROM users ORDER BY id")
+    users = [dict(row) for row in cursor.fetchall()]
+    db.close()
+    return users
+
+class AdminUserCreate(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+@app.post("/admin/users")
+def admin_add_user(user: AdminUserCreate, admin: dict = Depends(require_admin)):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id FROM users WHERE username = ?", (user.username,))
+    if cursor.fetchone():
+        db.close()
+        raise HTTPException(status_code=400, detail="Username sudah digunakan")
+    hashed_pwd = get_password_hash(user.password)
+    cursor.execute("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                   (user.username, hashed_pwd, int(user.is_admin)))
+    db.commit()
+    new_id = cursor.lastrowid
+    db.close()
+    return {"id": new_id, "username": user.username, "is_admin": user.is_admin}
+
+class AdminUserUpdate(BaseModel):
+    username: str | None = None
+    password: str | None = None
+    is_admin: bool | None = None
+
+@app.put("/admin/users/{user_id}")
+def admin_edit_user(user_id: int, data: AdminUserUpdate, admin: dict = Depends(require_admin)):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+    if not cursor.fetchone():
+        db.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if data.username is not None:
+        cursor.execute("SELECT id FROM users WHERE username = ? AND id != ?", (data.username, user_id))
+        if cursor.fetchone():
+            db.close()
+            raise HTTPException(status_code=400, detail="Username sudah digunakan")
+        cursor.execute("UPDATE users SET username = ? WHERE id = ?", (data.username, user_id))
+    
+    if data.password is not None:
+        hashed_pwd = get_password_hash(data.password)
+        cursor.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hashed_pwd, user_id))
+    
+    if data.is_admin is not None:
+        cursor.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(data.is_admin), user_id))
+    
+    db.commit()
+    cursor.execute("SELECT id, username, is_admin FROM users WHERE id = ?", (user_id,))
+    updated = dict(cursor.fetchone())
+    db.close()
+    return updated
+
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(user_id: int, admin: dict = Depends(require_admin)):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        db.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    if user['username'] == admin['username']:
+        db.close()
+        raise HTTPException(status_code=400, detail="Tidak bisa menghapus akun sendiri")
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.commit()
+    db.close()
+    return {"message": "User deleted"}
+
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     file_id = str(uuid.uuid4())
     ext = file.filename.split('.')[-1]
     filename = f"{file_id}.{ext}"
@@ -95,7 +241,7 @@ def run_demucs(filepath: str, file_id: str):
         separation_status[file_id] = {"status": "error", "progress": 0, "eta": ""}
 
 @app.post("/separate/{file_id}")
-async def separate_audio(file_id: str, background_tasks: BackgroundTasks):
+async def separate_audio(file_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     # Find file
     files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
     if not files:
@@ -114,7 +260,7 @@ async def get_status(file_id: str):
     return info
 
 @app.get("/stems/{file_id}")
-async def get_stems(file_id: str):
+async def get_stems(file_id: str, current_user: dict = Depends(get_current_user)):
     # Demucs outputs to OUTPUT_DIR/htdemucs_6s/{filename_without_ext}/
     # We need to find the dir
     files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
@@ -134,6 +280,8 @@ async def get_stems(file_id: str):
 
 @app.get("/audio/{file_id}/{stem_name}")
 async def get_audio(file_id: str, stem_name: str):
+    # Note: Audio is served to frontend audio player, which might not easily send headers in <audio src>.
+    # We leave this unprotected or protect via query token if needed.
     files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
@@ -158,7 +306,7 @@ class MixParams(BaseModel):
     tempo: float
 
 @app.post("/export/{file_id}")
-async def export_mix(file_id: str, params: MixParams):
+async def export_mix(file_id: str, params: MixParams, current_user: dict = Depends(get_current_user)):
     files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
@@ -245,7 +393,7 @@ def run_tab_generator(filepath: str, file_id: str):
         tab_status[file_id] = {"status": "error", "progress": 0}
 
 @app.post("/generate_tab_master/{file_id}")
-async def generate_tab_master(file_id: str, background_tasks: BackgroundTasks):
+async def generate_tab_master(file_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
