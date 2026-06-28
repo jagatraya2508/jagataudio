@@ -1045,3 +1045,945 @@ input[type=range].original-slider::-webkit-slider-thumb:hover {
 .edit-input:focus {
   border-color: var(--accent-primary);
 }
+
+/* ============================================
+   TAB NAVIGATION
+   ============================================ */
+
+.tab-navigation {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 2rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  padding: 0.4rem;
+  width: fit-content;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0.7rem 1.5rem;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.tab-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tab-btn.active {
+  background: linear-gradient(135deg, rgba(131, 56, 236, 0.3), rgba(255, 71, 126, 0.2));
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 12px rgba(131, 56, 236, 0.2);
+}
+
+/* ============================================
+   YOUTUBE KARAOKE STYLES
+   ============================================ */
+
+.karaoke-container {
+  width: 100%;
+  max-width: 800px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+/* YouTube Input Card */
+.yt-input-card {
+  width: 100%;
+  padding: 2.5rem;
+  text-align: center;
+  border: 1px solid rgba(255, 0, 0, 0.1);
+}
+
+.yt-input-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 2rem;
+}
+
+.yt-icon {
+  color: #ff0033;
+  filter: drop-shadow(0 0 12px rgba(255, 0, 51, 0.4));
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 8px rgba(255, 0, 51, 0.3)); }
+  50% { filter: drop-shadow(0 0 20px rgba(255, 0, 51, 0.6)); }
+}
+
+.yt-input-header h3 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #ff0033, #ff477e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.yt-input-header p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+/* Mode Selector */
+.yt-mode-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+  margin-bottom: 1.5rem;
+}
+
+.yt-mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.yt-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.yt-mode-btn.active {
+  background: linear-gradient(135deg, rgba(255, 0, 51, 0.15), rgba(255, 71, 126, 0.1));
+  border-color: rgba(255, 0, 51, 0.4);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(255, 0, 51, 0.1);
+}
+
+.mode-desc {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+/* URL Input */
+.yt-url-input {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.yt-url-input input {
+  flex: 1;
+  padding: 0.9rem 1.2rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  outline: none;
+  transition: all 0.3s ease;
+}
+
+.yt-url-input input:focus {
+  border-color: #ff0033;
+  box-shadow: 0 0 0 3px rgba(255, 0, 51, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.yt-url-input input::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.yt-search-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.9rem 1.5rem;
+  background: linear-gradient(135deg, #ff0033, #ff477e);
+  border: none;
+  border-radius: 12px;
+  color: white;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.yt-search-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 0, 51, 0.4);
+}
+
+.yt-search-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading title */
+.yt-loading-title {
+  color: #ff477e;
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+}
+
+/* ============================================
+   YOUTUBE KARAOKE PLAYER
+   ============================================ */
+
+.yt-karaoke-player {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+/* Video Wrapper */
+.yt-video-wrapper {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 aspect ratio */
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+}
+
+.yt-video-iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.yt-video-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 1rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.yt-muted-badge {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0.3rem 0.8rem;
+  border-radius: 20px;
+  backdrop-filter: blur(4px);
+}
+
+/* Song Info */
+.yt-song-info {
+  padding: 1.2rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.yt-song-details {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.yt-song-icon {
+  color: #ff477e;
+  flex-shrink: 0;
+}
+
+.yt-song-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yt-song-duration {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+/* Audio Toggle (Original / Karaoke) */
+.yt-audio-toggle {
+  display: flex;
+  gap: 0.3rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 10px;
+  padding: 0.25rem;
+  flex-shrink: 0;
+}
+
+.yt-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.45rem 0.8rem;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.yt-toggle-btn.active {
+  background: linear-gradient(135deg, #ff477e, #ff0033);
+  color: white;
+  box-shadow: 0 2px 10px rgba(255, 71, 126, 0.3);
+}
+
+.yt-toggle-btn:hover:not(.active) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ============================================
+   PITCH CONTROL
+   ============================================ */
+
+.yt-pitch-control {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  border: 1px solid rgba(255, 71, 126, 0.15);
+}
+
+.pitch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pitch-header h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.pitch-display {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  padding: 0.3rem 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: all 0.3s ease;
+  font-family: monospace;
+}
+
+.pitch-display.shifted {
+  color: #ff477e;
+  border-color: rgba(255, 71, 126, 0.3);
+  background: rgba(255, 71, 126, 0.08);
+  box-shadow: 0 0 15px rgba(255, 71, 126, 0.1);
+}
+
+/* Pitch Buttons */
+.pitch-buttons {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+}
+
+.pitch-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.6rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.pitch-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  color: #fff;
+}
+
+.pitch-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pitch-btn.pitch-down,
+.pitch-btn.pitch-down-big {
+  border-color: rgba(58, 134, 255, 0.2);
+}
+
+.pitch-btn.pitch-down:hover:not(:disabled),
+.pitch-btn.pitch-down-big:hover:not(:disabled) {
+  background: rgba(58, 134, 255, 0.15);
+  border-color: rgba(58, 134, 255, 0.4);
+  color: #3a86ff;
+  box-shadow: 0 4px 15px rgba(58, 134, 255, 0.2);
+}
+
+.pitch-btn.pitch-up,
+.pitch-btn.pitch-up-big {
+  border-color: rgba(255, 71, 126, 0.2);
+}
+
+.pitch-btn.pitch-up:hover:not(:disabled),
+.pitch-btn.pitch-up-big:hover:not(:disabled) {
+  background: rgba(255, 71, 126, 0.15);
+  border-color: rgba(255, 71, 126, 0.4);
+  color: #ff477e;
+  box-shadow: 0 4px 15px rgba(255, 71, 126, 0.2);
+}
+
+.pitch-btn.pitch-reset {
+  border-color: rgba(46, 196, 182, 0.2);
+}
+
+.pitch-btn.pitch-reset:hover:not(:disabled) {
+  background: rgba(46, 196, 182, 0.15);
+  border-color: rgba(46, 196, 182, 0.4);
+  color: #2ec4b6;
+  box-shadow: 0 4px 15px rgba(46, 196, 182, 0.2);
+}
+
+/* Pitch Slider Row */
+.pitch-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.pitch-label {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  font-weight: 600;
+  min-width: 30px;
+  text-align: center;
+}
+
+.pitch-slider {
+  flex: 1;
+}
+
+/* ============================================
+   YOUTUBE PLAYBACK CONTROLS
+   ============================================ */
+
+.yt-playback-controls {
+  padding: 1.2rem 1.5rem;
+}
+
+.yt-playback-row {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+}
+
+.yt-playback-row .play-btn {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+}
+
+.yt-timeline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+/* ============================================
+   RESPONSIVE - KARAOKE
+   ============================================ */
+
+@media (max-width: 640px) {
+  .tab-navigation {
+    width: 100%;
+  }
+
+  .tab-btn {
+    flex: 1;
+    justify-content: center;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.8rem;
+  }
+
+  .yt-mode-selector {
+    grid-template-columns: 1fr;
+  }
+
+  .yt-url-input {
+    flex-direction: column;
+  }
+
+  .pitch-buttons {
+    flex-wrap: wrap;
+  }
+
+  .pitch-btn {
+    flex: 1;
+    min-width: 60px;
+    justify-content: center;
+  }
+
+  .yt-song-info {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .yt-playback-row {
+    flex-direction: column;
+  }
+
+  .yt-playback-row .play-btn {
+    align-self: center;
+  }
+
+  .yt-timeline {
+    width: 100%;
+  }
+
+  .karaoke-container {
+    padding: 0 0.5rem;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ============================================
+   LICENSE ACTIVATION PAGE
+   ============================================ */
+
+.license-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  max-width: 600px;
+  width: 100%;
+  animation: licenseSlideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes licenseSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.license-card {
+  width: 100%;
+  background: linear-gradient(135deg, rgba(131, 56, 236, 0.08) 0%, rgba(255, 71, 126, 0.04) 100%);
+  border: 1px solid rgba(131, 56, 236, 0.2);
+  border-radius: 20px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  backdrop-filter: blur(20px);
+  position: relative;
+  overflow: hidden;
+}
+
+.license-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #8338ec, #ff477e, #ff9f1c, #8338ec);
+  background-size: 200% 100%;
+  animation: licenseGradient 3s linear infinite;
+}
+
+@keyframes licenseGradient {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+
+.license-shield-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(131, 56, 236, 0.2), rgba(255, 71, 126, 0.2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 1.5rem;
+  animation: shieldPulse 2s ease-in-out infinite;
+}
+
+@keyframes shieldPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(131, 56, 236, 0.3); }
+  50% { box-shadow: 0 0 0 15px rgba(131, 56, 236, 0); }
+}
+
+.license-card h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, #fff, #c4a7ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.license-card .license-subtitle {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+
+/* Hardware ID Display */
+.hwid-section {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+.hwid-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-secondary);
+  margin-bottom: 0.7rem;
+  font-weight: 600;
+}
+
+.hwid-value {
+  font-family: 'Courier New', monospace;
+  font-size: 0.82rem;
+  color: #c4a7ff;
+  word-break: break-all;
+  line-height: 1.6;
+  padding: 0.6rem;
+  background: rgba(131, 56, 236, 0.08);
+  border-radius: 8px;
+  border: 1px dashed rgba(131, 56, 236, 0.2);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.hwid-value:hover {
+  background: rgba(131, 56, 236, 0.15);
+  border-color: rgba(131, 56, 236, 0.4);
+}
+
+.hwid-copy-hint {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-top: 0.5rem;
+  opacity: 0.7;
+}
+
+.hwid-copied {
+  color: #2ec4b6 !important;
+  font-weight: 600;
+}
+
+/* License Upload Area */
+.license-upload-section {
+  width: 100%;
+}
+
+.license-upload-area {
+  border: 2px dashed rgba(131, 56, 236, 0.3);
+  border-radius: 16px;
+  padding: 2rem 1.5rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: rgba(131, 56, 236, 0.03);
+  position: relative;
+}
+
+.license-upload-area:hover {
+  border-color: rgba(131, 56, 236, 0.6);
+  background: rgba(131, 56, 236, 0.08);
+  transform: translateY(-2px);
+}
+
+.license-upload-area.dragging {
+  border-color: #8338ec;
+  background: rgba(131, 56, 236, 0.15);
+  box-shadow: 0 0 30px rgba(131, 56, 236, 0.2);
+}
+
+.license-upload-icon {
+  color: #8338ec;
+  margin-bottom: 0.8rem;
+}
+
+.license-upload-area h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.license-upload-area p {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.license-upload-area input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* License Status Messages */
+.license-message {
+  width: 100%;
+  padding: 1rem 1.2rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: fadeIn 0.3s ease;
+}
+
+.license-message.success {
+  background: rgba(46, 196, 182, 0.1);
+  border: 1px solid rgba(46, 196, 182, 0.3);
+  color: #2ec4b6;
+}
+
+.license-message.error {
+  background: rgba(255, 71, 126, 0.1);
+  border: 1px solid rgba(255, 71, 126, 0.3);
+  color: #ff477e;
+}
+
+.license-message.warning {
+  background: rgba(255, 159, 28, 0.1);
+  border: 1px solid rgba(255, 159, 28, 0.3);
+  color: #ff9f1c;
+}
+
+.license-message.info {
+  background: rgba(58, 134, 255, 0.1);
+  border: 1px solid rgba(58, 134, 255, 0.3);
+  color: #3a86ff;
+}
+
+/* License Info Card (when licensed) */
+.license-info-card {
+  width: 100%;
+  background: linear-gradient(135deg, rgba(46, 196, 182, 0.08) 0%, rgba(131, 56, 236, 0.04) 100%);
+  border: 1px solid rgba(46, 196, 182, 0.2);
+  border-radius: 16px;
+  padding: 1.5rem;
+}
+
+.license-info-header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.license-info-header .license-active-badge {
+  background: linear-gradient(135deg, #2ec4b6, #1a9e93);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.3rem 0.8rem;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.license-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.license-info-item {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  padding: 0.8rem;
+}
+
+.license-info-item .label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  margin-bottom: 0.3rem;
+}
+
+.license-info-item .value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.license-info-item .value.highlight {
+  color: #2ec4b6;
+}
+
+.license-info-item .value.warning {
+  color: #ff9f1c;
+}
+
+.license-info-item .value.danger {
+  color: #ff477e;
+}
+
+/* License loading spinner */
+.license-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 3rem;
+}
+
+.license-loading p {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* License upload progress */
+.license-activating {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem;
+  color: #8338ec;
+  font-weight: 500;
+}
+
+/* Steps instruction */
+.license-steps {
+  width: 100%;
+  text-align: left;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.license-steps h4 {
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.license-steps ol {
+  list-style: none;
+  counter-reset: steps;
+  padding: 0;
+}
+
+.license-steps li {
+  counter-increment: steps;
+  padding: 0.6rem 0;
+  padding-left: 2.2rem;
+  position: relative;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.5;
+}
+
+.license-steps li::before {
+  content: counter(steps);
+  position: absolute;
+  left: 0;
+  top: 0.6rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8338ec, #9d4edd);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.license-steps li + li {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 600px) {
+  .license-card {
+    padding: 1.5rem 1rem;
+  }
+  
+  .license-info-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .hwid-value {
+    font-size: 0.7rem;
+  }
+}

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, MicOff, KeyRound, Copy, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = "http://localhost:8000";
@@ -15,6 +15,9 @@ const INSTRUMENTS = [
 ];
 
 function App() {
+  // Tab navigation
+  const [activeTab, setActiveTab] = useState('stems'); // 'stems' or 'karaoke'
+
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState('idle'); // idle, selected, uploading, processing, ready, error
   const [progressText, setProgressText] = useState('');
@@ -27,6 +30,8 @@ function App() {
   const [mutes, setMutes] = useState({});
   const [pitch, setPitch] = useState(0); // -12 to 12 semitones
   const [tempo, setTempo] = useState(1); // 0.5 to 2.0 playback rate
+  const [stemCurrentTime, setStemCurrentTime] = useState(0);
+  const [stemDuration, setStemDuration] = useState(0);
   
   // Original audio and progress states
   const [originalUrl, setOriginalUrl] = useState(null);
@@ -56,8 +61,43 @@ function App() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [adminMsg, setAdminMsg] = useState('');
 
+  // YouTube Karaoke State
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytVideoId, setYtVideoId] = useState(null); // internal ID from backend
+  const [ytYoutubeId, setYtYoutubeId] = useState(null); // actual YouTube video ID
+  const [ytStatus, setYtStatus] = useState('idle'); // idle, preparing, downloading, separating, ready, error
+  const [ytTitle, setYtTitle] = useState('');
+  const [ytThumbnail, setYtThumbnail] = useState('');
+  const [ytDuration, setYtDuration] = useState(0);
+  const [ytProgress, setYtProgress] = useState(0);
+  const [ytPitch, setYtPitch] = useState(0); // -12 to 12 semitones
+  const [ytIsPlaying, setYtIsPlaying] = useState(false);
+  const [ytCurrentTime, setYtCurrentTime] = useState(0);
+  const [ytAudioDuration, setYtAudioDuration] = useState(0);
+  const [ytMode, setYtMode] = useState('quick'); // 'quick' or 'full'
+  const [ytKaraokeReady, setYtKaraokeReady] = useState(false);
+  const [ytUseKaraoke, setYtUseKaraoke] = useState(false);
+  const [ytError, setYtError] = useState('');
+
+  // License State
+  const [licenseStatus, setLicenseStatus] = useState('checking'); // 'checking', 'valid', 'invalid'
+  const [licenseInfo, setLicenseInfo] = useState(null);
+  const [hardwareId, setHardwareId] = useState('');
+  const [licenseMessage, setLicenseMessage] = useState('');
+  const [licenseMessageType, setLicenseMessageType] = useState(''); // 'success', 'error', 'warning'
+  const [isActivating, setIsActivating] = useState(false);
+  const [hwidCopied, setHwidCopied] = useState(false);
+  // YouTube Audio refs
+  const ytAudioRef = useRef(null);
+  const ytAudioContextRef = useRef(null);
+  const ytSourceNodeRef = useRef(null);
+  const ytPitchShifterRef = useRef(null);
+  const ytPlayerRef = useRef(null); // YouTube iframe API player
+  const ytIframeRef = useRef(null);
+
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
+  const ytAnimFrameRef = useRef(null);
   const originalAudioRef = useRef(null);
 
   useEffect(() => {
@@ -67,6 +107,97 @@ function App() {
     };
   }, []);
 
+  // Check license on app load
+  useEffect(() => {
+    checkLicenseStatus();
+  }, []);
+
+  const checkLicenseStatus = async () => {
+    setLicenseStatus('checking');
+    try {
+      const res = await fetch(`${API_BASE_URL}/license/status`);
+      const data = await res.json();
+      
+      if (data.licensed) {
+        setLicenseStatus('valid');
+        setLicenseInfo(data.info);
+      } else {
+        setLicenseStatus('invalid');
+        setLicenseMessage(data.message || 'Lisensi tidak valid');
+      }
+      
+      if (data.hardware_id) {
+        setHardwareId(data.hardware_id);
+      }
+    } catch (e) {
+      console.error('License check failed:', e);
+      // If backend is not running yet, try again in 2 seconds
+      setTimeout(checkLicenseStatus, 2000);
+    }
+  };
+
+  const handleLicenseActivate = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (!file.name.endsWith('.lic')) {
+      setLicenseMessage('File harus berformat .lic');
+      setLicenseMessageType('error');
+      return;
+    }
+    
+    setIsActivating(true);
+    setLicenseMessage('');
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const res = await fetch(`${API_BASE_URL}/license/activate`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      
+      if (res.ok && data.status === 'success') {
+        setLicenseMessage(data.message);
+        setLicenseMessageType('success');
+        setLicenseInfo(data.info);
+        // Re-check license after short delay
+        setTimeout(() => {
+          setLicenseStatus('valid');
+        }, 1500);
+      } else {
+        setLicenseMessage(data.message || 'Aktivasi gagal');
+        setLicenseMessageType('error');
+      }
+    } catch (err) {
+      setLicenseMessage('Gagal mengaktifkan lisensi. Pastikan server berjalan.');
+      setLicenseMessageType('error');
+    } finally {
+      setIsActivating(false);
+      // Reset file input
+      e.target.value = '';
+    }
+  };
+
+  const copyHardwareId = () => {
+    navigator.clipboard.writeText(hardwareId).then(() => {
+      setHwidCopied(true);
+      setTimeout(() => setHwidCopied(false), 2000);
+    });
+  };
+
+  const formatLicenseType = (type) => {
+    const map = { '3m': '3 Bulan', '6m': '6 Bulan', '1y': '1 Tahun', '3bulan': '3 Bulan', '6bulan': '6 Bulan', '1tahun': '1 Tahun' };
+    return map[type] || type;
+  };
+
+  const formatDate = (isoDate) => {
+    if (!isoDate) return '-';
+    return new Date(isoDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+  };
+
   useEffect(() => {
     return () => {
       if (originalUrl) {
@@ -74,6 +205,28 @@ function App() {
       }
     };
   }, [originalUrl]);
+
+  useEffect(() => {
+    let animationFrameId;
+    const updateProgress = () => {
+      if (Tone.Transport.state === 'started') {
+        const currentTime = Tone.Transport.seconds;
+        if (stemDuration > 0 && currentTime >= stemDuration) {
+           Tone.Transport.stop();
+           setIsPlaying(false);
+           Tone.Transport.seconds = 0;
+           setStemCurrentTime(0);
+        } else {
+           setStemCurrentTime(currentTime);
+           animationFrameId = requestAnimationFrame(updateProgress);
+        }
+      }
+    };
+    if (isPlaying) {
+      animationFrameId = requestAnimationFrame(updateProgress);
+    }
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isPlaying, stemDuration]);
 
   useEffect(() => {
     let interval;
@@ -421,6 +574,12 @@ function App() {
       setVolumes(initVols);
       setMutes(initMutes);
       
+      if (newPlayers[INSTRUMENTS[0].id]?.buffer) {
+         setStemDuration(newPlayers[INSTRUMENTS[0].id].buffer.duration);
+      }
+      setStemCurrentTime(0);
+      Tone.Transport.seconds = 0;
+      
       setStatus('ready');
       setProgressText('');
     } catch (e) {
@@ -478,6 +637,12 @@ function App() {
     });
   };
 
+  const handleSeekStem = (e) => {
+    const newTime = parseFloat(e.target.value);
+    setStemCurrentTime(newTime);
+    Tone.Transport.seconds = newTime;
+  };
+
   const exportMix = async () => {
     if (!fileId) return;
     setIsExporting(true);
@@ -517,18 +682,360 @@ function App() {
     }
   };
 
+  // ============================================
+  // YOUTUBE KARAOKE FUNCTIONS
+  // ============================================
+
+  const handleYtPrepare = async () => {
+    if (!ytUrl.trim()) return;
+    setYtStatus('preparing');
+    setYtProgress(0);
+    setYtError('');
+    setYtTitle('');
+    setYtThumbnail('');
+    setYtKaraokeReady(false);
+    setYtUseKaraoke(false);
+    
+    try {
+      const res = await fetch(`${API_BASE_URL}/youtube/prepare`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ url: ytUrl, mode: ytMode })
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        setYtVideoId(data.video_id);
+        setYtStatus('downloading');
+        // Start polling
+        pollYtStatus(data.video_id);
+      } else {
+        setYtStatus('error');
+        setYtError(data.detail || 'Gagal memproses URL');
+      }
+    } catch (e) {
+      setYtStatus('error');
+      setYtError('Kesalahan jaringan');
+    }
+  };
+
+  const pollYtStatus = (videoId) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/youtube/status/${videoId}`);
+        const data = await res.json();
+        
+        if (data.title) setYtTitle(data.title);
+        if (data.thumbnail) setYtThumbnail(data.thumbnail);
+        if (data.duration) setYtDuration(data.duration);
+        if (data.youtube_id) setYtYoutubeId(data.youtube_id);
+        if (data.progress !== undefined) setYtProgress(data.progress);
+        
+        if (data.status === 'separating') {
+          setYtStatus('separating');
+        } else if (data.status === 'downloading') {
+          setYtStatus('downloading');
+        }
+        
+        if (data.status === 'done') {
+          clearInterval(interval);
+          setYtStatus('ready');
+          setYtProgress(100);
+          if (data.karaoke_ready) {
+            setYtKaraokeReady(true);
+            setYtUseKaraoke(true);
+          }
+          // Setup audio with pitch shifting
+          setupYtAudio(videoId, data.karaoke_ready);
+        } else if (data.status === 'error') {
+          clearInterval(interval);
+          setYtStatus('error');
+          setYtError(data.error || 'Terjadi kesalahan');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }, 1000);
+  };
+
+  const setupYtAudio = async (videoId, hasKaraoke) => {
+    try {
+      const audioUrl = `${API_BASE_URL}/youtube/audio/${videoId}${hasKaraoke ? '?karaoke=true' : ''}`;
+      
+      // Create audio element
+      if (ytAudioRef.current) {
+        ytAudioRef.current.pause();
+        ytAudioRef.current = null;
+      }
+      
+      const audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.src = audioUrl;
+      audio.preload = 'auto';
+      
+      // Setup Web Audio API for pitch shifting
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      
+      audio.addEventListener('canplaythrough', () => {
+        const source = audioContext.createMediaElementSource(audio);
+        
+        // Simple pitch shift using playback detune
+        // We'll use the audio element's playbackRate combined with a compensation
+        source.connect(audioContext.destination);
+        
+        ytAudioRef.current = audio;
+        ytAudioContextRef.current = audioContext;
+        ytSourceNodeRef.current = source;
+        
+        setYtAudioDuration(audio.duration || 0);
+      }, { once: true });
+
+      audio.addEventListener('loadedmetadata', () => {
+        setYtAudioDuration(audio.duration || 0);
+      });
+
+      audio.addEventListener('ended', () => {
+        setYtIsPlaying(false);
+        setYtCurrentTime(0);
+      });
+      
+      audio.load();
+    } catch (e) {
+      console.error('Error setting up YouTube audio:', e);
+    }
+  };
+
+  const toggleYtPlay = () => {
+    if (!ytAudioRef.current) return;
+    
+    if (ytAudioContextRef.current?.state === 'suspended') {
+      ytAudioContextRef.current.resume();
+    }
+    
+    if (ytIsPlaying) {
+      ytAudioRef.current.pause();
+      setYtIsPlaying(false);
+    } else {
+      ytAudioRef.current.play();
+      setYtIsPlaying(true);
+    }
+  };
+
+  // Update YouTube audio current time
+  useEffect(() => {
+    let animId;
+    const update = () => {
+      if (ytAudioRef.current && ytIsPlaying) {
+        setYtCurrentTime(ytAudioRef.current.currentTime);
+        animId = requestAnimationFrame(update);
+      }
+    };
+    if (ytIsPlaying) {
+      animId = requestAnimationFrame(update);
+    }
+    return () => cancelAnimationFrame(animId);
+  }, [ytIsPlaying]);
+
+  const handleYtSeek = (e) => {
+    const newTime = parseFloat(e.target.value);
+    setYtCurrentTime(newTime);
+    if (ytAudioRef.current) {
+      ytAudioRef.current.currentTime = newTime;
+    }
+  };
+
+  const handleYtPitchChange = (newPitch) => {
+    const clamped = Math.max(-12, Math.min(12, newPitch));
+    setYtPitch(clamped);
+    
+    if (ytAudioRef.current) {
+      // Use preservesPitch = false with playbackRate to shift pitch
+      // Semitone to rate: rate = 2^(semitones/12)
+      // But this also changes tempo. To compensate, we'd need a proper pitch shifter.
+      // For simplicity, we use the Web Audio API approach:
+      // We detune the audio context output.
+      // Unfortunately MediaElementSource doesn't support detune directly.
+      // Best approach: use playbackRate = 2^(pitch/12) which changes pitch but also tempo.
+      // This is the most reliable cross-browser method.
+      const rate = Math.pow(2, clamped / 12);
+      ytAudioRef.current.preservesPitch = false;
+      ytAudioRef.current.playbackRate = rate;
+    }
+  };
+
+  const switchYtAudioSource = async (useKaraoke) => {
+    if (!ytVideoId) return;
+    const wasPlaying = ytIsPlaying;
+    const currentTime = ytAudioRef.current?.currentTime || 0;
+    
+    if (ytAudioRef.current) {
+      ytAudioRef.current.pause();
+    }
+    
+    setYtUseKaraoke(useKaraoke);
+    
+    const audioUrl = `${API_BASE_URL}/youtube/audio/${ytVideoId}${useKaraoke ? '?karaoke=true' : ''}`;
+    
+    if (ytAudioRef.current) {
+      ytAudioRef.current.src = audioUrl;
+      ytAudioRef.current.load();
+      ytAudioRef.current.addEventListener('canplaythrough', () => {
+        ytAudioRef.current.currentTime = currentTime;
+        // Reapply pitch
+        const rate = Math.pow(2, ytPitch / 12);
+        ytAudioRef.current.preservesPitch = false;
+        ytAudioRef.current.playbackRate = rate;
+        if (wasPlaying) {
+          ytAudioRef.current.play();
+          setYtIsPlaying(true);
+        }
+      }, { once: true });
+    }
+  };
+
+  const resetYtKaraoke = () => {
+    if (ytAudioRef.current) {
+      ytAudioRef.current.pause();
+      ytAudioRef.current = null;
+    }
+    if (ytAudioContextRef.current) {
+      ytAudioContextRef.current.close();
+      ytAudioContextRef.current = null;
+    }
+    setYtUrl('');
+    setYtVideoId(null);
+    setYtYoutubeId(null);
+    setYtStatus('idle');
+    setYtTitle('');
+    setYtThumbnail('');
+    setYtDuration(0);
+    setYtProgress(0);
+    setYtPitch(0);
+    setYtIsPlaying(false);
+    setYtCurrentTime(0);
+    setYtAudioDuration(0);
+    setYtKaraokeReady(false);
+    setYtUseKaraoke(false);
+    setYtError('');
+  };
+
+  // ============================================
+  // RENDER: LICENSE GATE
+  // ============================================
+
+  if (licenseStatus === 'checking') {
+    return (
+      <div className="app-container">
+        <div className="background-glow"></div>
+        <header className="header">
+          <div><h1>Jagat <span>Audio</span></h1><p>AI Stem Separation & Karaoke</p></div>
+        </header>
+        <main className="main-content">
+          <div className="license-loading">
+            <Loader2 size={48} className="spinner" />
+            <p>Memeriksa lisensi...</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (licenseStatus === 'invalid') {
+    return (
+      <div className="app-container">
+        <div className="background-glow"></div>
+        <header className="header">
+          <div><h1>Jagat <span>Audio</span></h1><p>AI Stem Separation & Karaoke</p></div>
+        </header>
+        <main className="main-content">
+          <div className="license-gate">
+            <div className="license-card">
+              <div className="license-shield-icon">
+                <KeyRound size={36} color="#c4a7ff" />
+              </div>
+              <h2>Aktivasi Lisensi Diperlukan</h2>
+              <p className="license-subtitle">
+                Aplikasi ini memerlukan lisensi yang valid untuk digunakan. 
+                Hubungi admin untuk mendapatkan file lisensi.
+              </p>
+
+              {/* Hardware ID */}
+              <div className="hwid-section">
+                <div className="hwid-label">
+                  <Shield size={14} /> Hardware ID Anda
+                </div>
+                <div className="hwid-value" onClick={copyHardwareId} title="Klik untuk menyalin">
+                  {hardwareId || 'Memuat...'}
+                </div>
+                <div className={`hwid-copy-hint ${hwidCopied ? 'hwid-copied' : ''}`}>
+                  {hwidCopied ? '✓ Tersalin ke clipboard!' : '📋 Klik untuk menyalin Hardware ID'}
+                </div>
+              </div>
+
+              {/* Upload License */}
+              <div className="license-upload-section">
+                {isActivating ? (
+                  <div className="license-activating">
+                    <Loader2 size={20} className="spinner" />
+                    <span>Mengaktifkan lisensi...</span>
+                  </div>
+                ) : (
+                  <div className="license-upload-area">
+                    <Upload size={32} className="license-upload-icon" />
+                    <h4>Upload File Lisensi (.lic)</h4>
+                    <p>Seret file atau klik untuk memilih</p>
+                    <input
+                      type="file"
+                      accept=".lic"
+                      onChange={handleLicenseActivate}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Status Message */}
+              {licenseMessage && (
+                <div className={`license-message ${licenseMessageType}`}>
+                  {licenseMessageType === 'success' && <CheckCircle size={18} />}
+                  {licenseMessageType === 'error' && <AlertTriangle size={18} />}
+                  {licenseMessageType === 'warning' && <AlertTriangle size={18} />}
+                  {licenseMessage}
+                </div>
+              )}
+            </div>
+
+            {/* Instructions */}
+            <div className="license-steps">
+              <h4>Cara Mendapatkan Lisensi</h4>
+              <ol>
+                <li>Salin <strong>Hardware ID</strong> di atas (klik untuk copy)</li>
+                <li>Kirim Hardware ID ke admin/penjual JagatAudio</li>
+                <li>Admin akan membuat file lisensi (<code>.lic</code>) untuk Anda</li>
+                <li>Upload file lisensi di area upload di atas</li>
+                <li>Aplikasi akan aktif secara otomatis!</li>
+              </ol>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ============================================
+  // RENDER: MAIN APP (Licensed)
+  // ============================================
+
   return (
     <div className="app-container">
       <div className="background-glow"></div>
       
       <header className="header">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: '900px' }}>
-          <div>
-            <h1>Jagat <span>Audio</span></h1>
-            <p>AI Stem Separation & Pitch/Tempo Control</p>
-          </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%', maxWidth: '1000px' }}>
           {token && (
-            <div className="user-profile">
+            <div className="user-profile" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
               {isAdmin && (
                 <button className="admin-btn" onClick={() => { setShowAdminPanel(!showAdminPanel); if (!showAdminPanel) fetchUsers(); }}>
                   <Shield size={16} /> Admin
@@ -540,8 +1047,51 @@ function App() {
               </button>
             </div>
           )}
+          <div>
+            <h1>Jagat <span>Audio</span></h1>
+            <p>AI Stem Separation & Karaoke</p>
+          </div>
         </div>
       </header>
+
+      {/* License Info Bar */}
+      {licenseInfo && (
+        <div className="license-info-card" style={{ maxWidth: '500px', width: '100%', marginBottom: '1rem', padding: '0.8rem 1.2rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <CheckCircle size={16} color="#2ec4b6" />
+              <span className="license-active-badge">Lisensi Aktif</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                {formatLicenseType(licenseInfo.license_type)}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
+              <Clock size={14} color={licenseInfo.days_remaining <= 30 ? '#ff9f1c' : '#2ec4b6'} />
+              <span style={{ color: licenseInfo.days_remaining <= 30 ? '#ff9f1c' : 'var(--text-secondary)' }}>
+                Sisa {licenseInfo.days_remaining} hari • Exp: {formatDate(licenseInfo.expiry_date)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Navigation - only show when logged in and not in admin panel */}
+      {token && !showAdminPanel && (
+        <nav className="tab-navigation">
+          <button
+            className={`tab-btn ${activeTab === 'stems' ? 'active' : ''}`}
+            onClick={() => setActiveTab('stems')}
+          >
+            <Music size={18} /> Stem Separator
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
+            onClick={() => setActiveTab('karaoke')}
+          >
+            <MonitorPlay size={18} /> YouTube Karaoke
+          </button>
+        </nav>
+      )}
 
       <main className="main-content">
         {showAdminPanel && isAdmin ? (
@@ -667,7 +1217,7 @@ function App() {
               </button>
             </p>
           </div>
-        ) : (
+        ) : activeTab === 'stems' ? (
           <>
             {status === 'idle' && (
           <div className="upload-card">
@@ -861,25 +1411,42 @@ function App() {
         {status === 'ready' && (
           <div className="studio-container">
             <div className="master-controls glass-panel">
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                <button className={`play-btn ${isPlaying ? 'playing' : ''}`} onClick={togglePlay}>
-                  {isPlaying ? <Pause size={32} /> : <Play size={32} />}
-                </button>
-                <button className="process-btn" onClick={exportMix} disabled={isExporting} style={{ padding: '0.8rem 1.5rem', borderRadius: '12px' }}>
-                  {isExporting ? <Loader2 size={20} className="spinner" /> : <Download size={20} />}
-                  <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : 'Export MP3'}</span>
-                </button>
-              </div>
-              
-              <div className="global-sliders">
-                <div className="slider-group">
-                  <label>Pitch: {pitch > 0 ? '+' : ''}{pitch} Semitones</label>
-                  <input type="range" min="-12" max="12" step="1" value={pitch} onChange={handlePitchChange} className="accent-slider" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                    <button className={`play-btn ${isPlaying ? 'playing' : ''}`} onClick={togglePlay}>
+                      {isPlaying ? <Pause size={32} /> : <Play size={32} />}
+                    </button>
+                    <button className="process-btn" onClick={exportMix} disabled={isExporting} style={{ padding: '0.8rem 1.5rem', borderRadius: '12px' }}>
+                      {isExporting ? <Loader2 size={20} className="spinner" /> : <Download size={20} />}
+                      <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : 'Export MP3'}</span>
+                    </button>
+                  </div>
+                  <div className="global-sliders" style={{ margin: 0 }}>
+                    <div className="slider-group">
+                      <label>Pitch: {pitch > 0 ? '+' : ''}{pitch} Semitones</label>
+                      <input type="range" min="-12" max="12" step="1" value={pitch} onChange={handlePitchChange} className="accent-slider" />
+                    </div>
+                    
+                    <div className="slider-group">
+                      <label>Tempo: {Math.round(tempo * 100)}%</label>
+                      <input type="range" min="0.5" max="1.5" step="0.05" value={tempo} onChange={handleTempoChange} className="accent-slider" />
+                    </div>
+                  </div>
                 </div>
-                
-                <div className="slider-group">
-                  <label>Tempo: {Math.round(tempo * 100)}%</label>
-                  <input type="range" min="0.5" max="1.5" step="0.05" value={tempo} onChange={handleTempoChange} className="accent-slider" />
+
+                <div className="original-timeline" style={{ marginTop: '0.5rem' }}>
+                  <span className="time-display">{formatTime(stemCurrentTime)}</span>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max={stemDuration || 100} 
+                    step="0.1"
+                    value={stemCurrentTime} 
+                    onChange={handleSeekStem} 
+                    className="original-slider" 
+                  />
+                  <span className="time-display">{formatTime(stemDuration)}</span>
                 </div>
               </div>
             </div>
@@ -919,7 +1486,213 @@ function App() {
           </div>
         )}
           </>
-        )}
+        ) : activeTab === 'karaoke' ? (
+          /* ============================================
+             YOUTUBE KARAOKE TAB
+             ============================================ */
+          <div className="karaoke-container animate-fade-in">
+            {ytStatus === 'idle' && (
+              <div className="yt-input-card glass-panel">
+                <div className="yt-input-header">
+                  <MonitorPlay size={48} className="yt-icon" />
+                  <h3>YouTube Karaoke</h3>
+                  <p>Paste link YouTube, ubah nada dasar, dan mulai karaoke!</p>
+                </div>
+
+                <div className="yt-mode-selector">
+                  <button
+                    className={`yt-mode-btn ${ytMode === 'quick' ? 'active' : ''}`}
+                    onClick={() => setYtMode('quick')}
+                  >
+                    <Play size={16} /> Karaoke Cepat
+                    <span className="mode-desc">~15 detik, tanpa hapus vokal</span>
+                  </button>
+                  <button
+                    className={`yt-mode-btn ${ytMode === 'full' ? 'active' : ''}`}
+                    onClick={() => setYtMode('full')}
+                  >
+                    <MicOff size={16} /> Hapus Vokal + Karaoke
+                    <span className="mode-desc">~5-10 menit, AI hapus vokal</span>
+                  </button>
+                </div>
+
+                <div className="yt-url-input">
+                  <input
+                    type="text"
+                    placeholder="Paste link YouTube di sini... (contoh: https://youtu.be/xxxxx)"
+                    value={ytUrl}
+                    onChange={(e) => setYtUrl(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleYtPrepare()}
+                  />
+                  <button className="yt-search-btn" onClick={handleYtPrepare} disabled={!ytUrl.trim()}>
+                    <Search size={20} /> Proses
+                  </button>
+                </div>
+
+                {ytError && (
+                  <div className="auth-message error">{ytError}</div>
+                )}
+              </div>
+            )}
+
+            {(ytStatus === 'preparing' || ytStatus === 'downloading' || ytStatus === 'separating') && (
+              <div className="loading-card glass-panel">
+                <Loader2 size={48} className="spinner" />
+                <h3>
+                  {ytStatus === 'preparing' && 'Memproses URL YouTube...'}
+                  {ytStatus === 'downloading' && 'Mengunduh Audio dari YouTube...'}
+                  {ytStatus === 'separating' && 'AI Sedang Menghapus Vokal...'}
+                </h3>
+                {ytTitle && <p className="yt-loading-title">{ytTitle}</p>}
+                
+                <div className="progress-section">
+                  <div className="progress-info">
+                    <span className="progress-percent">{ytProgress}%</span>
+                    <span className="progress-eta">
+                      {ytStatus === 'downloading' ? 'Mengunduh audio...' : 'Memproses dengan Demucs...'}
+                    </span>
+                  </div>
+                  <div className="progress-bar-container">
+                    <div className="progress-bar-fill" style={{ width: `${ytProgress}%` }}></div>
+                  </div>
+                </div>
+
+                <button className="cancel-btn" style={{ maxWidth: '200px', margin: '1rem auto 0' }} onClick={resetYtKaraoke}>
+                  <X size={16} /> Batalkan
+                </button>
+              </div>
+            )}
+
+            {ytStatus === 'error' && (
+              <div className="upload-card" style={{ borderColor: '#ff477e' }}>
+                <h3 style={{ color: '#ff477e' }}>Gagal Memproses</h3>
+                <p>{ytError}</p>
+                <button className="upload-btn" onClick={resetYtKaraoke}>Coba Lagi</button>
+              </div>
+            )}
+
+            {ytStatus === 'ready' && (
+              <div className="yt-karaoke-player">
+                {/* YouTube Video Embed (muted - visual only) */}
+                {ytYoutubeId && (
+                  <div className="yt-video-wrapper">
+                    <iframe
+                      ref={ytIframeRef}
+                      src={`https://www.youtube.com/embed/${ytYoutubeId}?autoplay=0&mute=1&controls=0&modestbranding=1&rel=0`}
+                      title={ytTitle}
+                      frameBorder="0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      className="yt-video-iframe"
+                    />
+                    <div className="yt-video-overlay">
+                      <span className="yt-muted-badge">🔇 Video (audio terpisah untuk pitch control)</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Song Info */}
+                <div className="yt-song-info glass-panel">
+                  <div className="yt-song-details">
+                    <Music size={24} className="yt-song-icon" />
+                    <div>
+                      <h3 className="yt-song-title">{ytTitle}</h3>
+                      <p className="yt-song-duration">Durasi: {formatTime(ytAudioDuration || ytDuration)}</p>
+                    </div>
+                  </div>
+
+                  {/* Karaoke/Original toggle */}
+                  {ytKaraokeReady && (
+                    <div className="yt-audio-toggle">
+                      <button
+                        className={`yt-toggle-btn ${!ytUseKaraoke ? 'active' : ''}`}
+                        onClick={() => switchYtAudioSource(false)}
+                      >
+                        <Mic size={14} /> Original
+                      </button>
+                      <button
+                        className={`yt-toggle-btn ${ytUseKaraoke ? 'active' : ''}`}
+                        onClick={() => switchYtAudioSource(true)}
+                      >
+                        <MicOff size={14} /> Karaoke
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Pitch Control */}
+                <div className="yt-pitch-control glass-panel">
+                  <div className="pitch-header">
+                    <h4>🎵 Kontrol Nada Dasar</h4>
+                    <span className={`pitch-display ${ytPitch !== 0 ? 'shifted' : ''}`}>
+                      {ytPitch === 0 ? 'Original Key' : `${ytPitch > 0 ? '+' : ''}${ytPitch} Semitone${Math.abs(ytPitch) !== 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+
+                  <div className="pitch-buttons">
+                    <button className="pitch-btn pitch-down-big" onClick={() => handleYtPitchChange(ytPitch - 3)} disabled={ytPitch <= -12}>
+                      -3
+                    </button>
+                    <button className="pitch-btn pitch-down" onClick={() => handleYtPitchChange(ytPitch - 1)} disabled={ytPitch <= -12}>
+                      <ChevronDown size={20} /> -1
+                    </button>
+                    <button className="pitch-btn pitch-reset" onClick={() => handleYtPitchChange(0)}>
+                      <RotateCcw size={16} /> Reset
+                    </button>
+                    <button className="pitch-btn pitch-up" onClick={() => handleYtPitchChange(ytPitch + 1)} disabled={ytPitch >= 12}>
+                      <ChevronUp size={20} /> +1
+                    </button>
+                    <button className="pitch-btn pitch-up-big" onClick={() => handleYtPitchChange(ytPitch + 3)} disabled={ytPitch >= 12}>
+                      +3
+                    </button>
+                  </div>
+
+                  <div className="pitch-slider-row">
+                    <span className="pitch-label">-12</span>
+                    <input
+                      type="range"
+                      min="-12"
+                      max="12"
+                      step="1"
+                      value={ytPitch}
+                      onChange={(e) => handleYtPitchChange(parseInt(e.target.value))}
+                      className="accent-slider pitch-slider"
+                    />
+                    <span className="pitch-label">+12</span>
+                  </div>
+                </div>
+
+                {/* Playback Controls */}
+                <div className="yt-playback-controls glass-panel">
+                  <div className="yt-playback-row">
+                    <button className={`play-btn ${ytIsPlaying ? 'playing' : ''}`} onClick={toggleYtPlay}>
+                      {ytIsPlaying ? <Pause size={28} /> : <Play size={28} />}
+                    </button>
+
+                    <div className="yt-timeline">
+                      <span className="time-display">{formatTime(ytCurrentTime)}</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max={ytAudioDuration || 100}
+                        step="0.1"
+                        value={ytCurrentTime}
+                        onChange={handleYtSeek}
+                        className="original-slider"
+                      />
+                      <span className="time-display">{formatTime(ytAudioDuration)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* New Song Button */}
+                <button className="cancel-btn" style={{ maxWidth: '250px', margin: '0 auto' }} onClick={resetYtKaraoke}>
+                  <RefreshCw size={16} /> Pilih Lagu Lain
+                </button>
+              </div>
+            )}
+          </div>
+        ) : null}
       </main>
     </div>
   );

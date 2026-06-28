@@ -6,3 +6,5 @@ soundfile
 passlib
 bcrypt
 PyJWT
+yt-dlp
+cryptography

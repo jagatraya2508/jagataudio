@@ -1,14 +1,18 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, status
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
+from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import shutil
 import subprocess
 import uuid
+import tempfile
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 from database import get_db
 from pydantic import BaseModel
+from license_manager import get_hardware_id, validate_license, install_license, get_license_info
 
 app = FastAPI()
 
@@ -20,6 +24,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================
+# LICENSE MIDDLEWARE
+# ============================================
+
+# Endpoints that don't require license validation
+LICENSE_FREE_PATHS = {
+    "/license/status",
+    "/license/hardware-id",
+    "/license/activate",
+    "/docs",
+    "/openapi.json",
+}
+
+class LicenseMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        
+        # Allow license-related endpoints and static files
+        if any(path.startswith(p) for p in LICENSE_FREE_PATHS):
+            return await call_next(request)
+        
+        # Allow static files (frontend)
+        if path.startswith("/assets/") or path == "/" or path.endswith((".js", ".css", ".html", ".ico", ".png", ".svg")):
+            return await call_next(request)
+        
+        # Check license
+        license_result = validate_license()
+        if not license_result["valid"]:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "LICENSE_REQUIRED",
+                    "message": license_result["message"],
+                    "license_info": license_result.get("info")
+                }
+            )
+        
+        return await call_next(request)
+
+app.add_middleware(LicenseMiddleware)
+
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "separated"
 
@@ -28,6 +73,62 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Keep track of status
 separation_status = {}
+
+# ============================================
+# LICENSE ENDPOINTS
+# ============================================
+
+@app.get("/license/status")
+def license_status():
+    """Get current license status and info"""
+    return get_license_info()
+
+@app.get("/license/hardware-id")
+def license_hardware_id():
+    """Get this machine's hardware ID"""
+    return {"hardware_id": get_hardware_id()}
+
+@app.post("/license/activate")
+async def license_activate(file: UploadFile = File(...)):
+    """Upload and activate a license file (.lic)"""
+    if not file.filename.endswith('.lic'):
+        raise HTTPException(status_code=400, detail="File harus berformat .lic")
+    
+    # Save uploaded file temporarily
+    temp_dir = tempfile.mkdtemp()
+    temp_path = os.path.join(temp_dir, file.filename)
+    
+    try:
+        with open(temp_path, 'wb') as f:
+            content = await file.read()
+            f.write(content)
+        
+        # Install the license
+        result = install_license(temp_path)
+        
+        if result["success"]:
+            return {
+                "status": "success",
+                "message": result["message"],
+                "info": result.get("info")
+            }
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": result["message"],
+                    "info": result.get("info")
+                }
+            )
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(temp_path)
+            os.rmdir(temp_dir)
+        except:
+            pass
+
 
 class UserCreate(BaseModel):
     username: str
@@ -192,9 +293,10 @@ def run_demucs(filepath: str, file_id: str):
         command = [
             sys.executable, "-m", "demucs",
             "-n", "htdemucs_6s",
-            "-o", OUTPUT_DIR,
+            "-o", os.path.abspath(OUTPUT_DIR),
             "--mp3",
-            filepath
+            "--segment", "2",
+            os.path.abspath(filepath)
         ]
         
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True, encoding='utf-8', errors='replace')
@@ -229,6 +331,10 @@ def run_demucs(filepath: str, file_id: str):
             separation_status[file_id]["progress"] = 100
             separation_status[file_id]["eta"] = "00:00"
         else:
+            with open("error_log.txt", "w", encoding="utf-8") as f:
+                f.write(f"Demucs failed with returncode: {process.returncode}\n")
+                f.write("Logs:\n")
+                f.write("\n".join(logs))
             print(f"Demucs failed with returncode: {process.returncode}")
             print("Demucs execution logs:")
             for log_line in logs:
@@ -236,6 +342,9 @@ def run_demucs(filepath: str, file_id: str):
             separation_status[file_id]["status"] = "error"
     except Exception as e:
         import traceback
+        with open("error_log.txt", "w", encoding="utf-8") as f:
+            f.write(f"Exception: {str(e)}\n")
+            f.write(traceback.format_exc())
         traceback.print_exc()
         print("Exception in run_demucs:", str(e))
         separation_status[file_id] = {"status": "error", "progress": 0, "eta": ""}
@@ -416,6 +525,228 @@ async def download_tab(filename: str):
         return JSONResponse(status_code=404, content={"message": "File not found"})
     return FileResponse(filepath, media_type="text/plain", filename=filename)
 
+# ============================================
+# YOUTUBE KARAOKE ROUTES
+# ============================================
+
+YOUTUBE_AUDIO_DIR = "youtube_audio"
+os.makedirs(YOUTUBE_AUDIO_DIR, exist_ok=True)
+
+youtube_status = {}
+
+class YouTubePrepareRequest(BaseModel):
+    url: str
+    mode: str = "quick"  # "quick" or "full" (with vocal removal)
+
+def download_youtube_audio(url: str, video_id: str, mode: str):
+    """Download audio from YouTube using yt-dlp"""
+    try:
+        youtube_status[video_id] = {"status": "downloading", "progress": 5, "title": "", "thumbnail": "", "duration": 0}
+        print(f"[YT] Starting download for {url} (mode={mode})")
+        
+        import yt_dlp
+        
+        output_path = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.mp3")
+        
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                downloaded = d.get('downloaded_bytes', 0)
+                if total > 0:
+                    pct = int((downloaded / total) * 70) + 10  # 10-80%
+                    youtube_status[video_id]["progress"] = min(pct, 80)
+            elif d['status'] == 'finished':
+                print(f"[YT] Download finished, converting...")
+                youtube_status[video_id]["progress"] = 80
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.%(ext)s"),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'progress_hooks': [progress_hook],
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        # Download and extract info in one call
+        print(f"[YT] Extracting info + downloading audio...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            youtube_status[video_id]["title"] = info.get('title', 'Unknown')
+            youtube_status[video_id]["thumbnail"] = info.get('thumbnail', '')
+            youtube_status[video_id]["duration"] = info.get('duration', 0)
+            youtube_status[video_id]["youtube_id"] = info.get('id', '')
+            print(f"[YT] Got info: {info.get('title', 'Unknown')} ({info.get('duration', 0)}s)")
+        
+        youtube_status[video_id]["progress"] = 80
+        
+        if not os.path.exists(output_path):
+            # Check for other extensions and convert
+            for ext in ['webm', 'opus', 'm4a', 'wav', 'ogg']:
+                alt_path = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.{ext}")
+                if os.path.exists(alt_path):
+                    # ffmpeg convert to mp3
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", alt_path,
+                        "-codec:a", "libmp3lame", "-b:a", "192k",
+                        output_path
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    os.remove(alt_path)
+                    break
+        
+        if not os.path.exists(output_path):
+            youtube_status[video_id]["status"] = "error"
+            youtube_status[video_id]["error"] = "Gagal mengunduh audio"
+            return
+        
+        youtube_status[video_id]["progress"] = 90
+        
+        # If full mode, run Demucs for vocal separation
+        if mode == "full":
+            youtube_status[video_id]["status"] = "separating"
+            youtube_status[video_id]["progress"] = 0
+            
+            import sys
+            command = [
+                sys.executable, "-m", "demucs",
+                "-n", "htdemucs",
+                "--two-stems", "vocals",
+                "-o", OUTPUT_DIR,
+                "--mp3",
+                output_path
+            ]
+            
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+            
+            import re
+            while True:
+                char = process.stdout.read(1)
+                if not char:
+                    break
+                if char == '\r' or char == '\n':
+                    pass
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                # The output will be in OUTPUT_DIR/htdemucs/{video_id}/no_vocals.mp3
+                karaoke_dir = os.path.join(OUTPUT_DIR, "htdemucs", video_id)
+                karaoke_file = os.path.join(karaoke_dir, "no_vocals.mp3")
+                
+                if os.path.exists(karaoke_file):
+                    # Copy karaoke audio to youtube_audio dir
+                    karaoke_output = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}_karaoke.mp3")
+                    shutil.copy2(karaoke_file, karaoke_output)
+                    youtube_status[video_id]["karaoke_ready"] = True
+                else:
+                    youtube_status[video_id]["karaoke_ready"] = False
+            else:
+                youtube_status[video_id]["karaoke_ready"] = False
+        
+        youtube_status[video_id]["status"] = "done"
+        youtube_status[video_id]["progress"] = 100
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"YouTube download error: {e}")
+        youtube_status[video_id] = {
+            "status": "error",
+            "progress": 0,
+            "error": str(e)
+        }
+
+@app.post("/youtube/prepare")
+async def youtube_prepare(req: YouTubePrepareRequest, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
+    # Generate a unique video_id for this request
+    video_id = str(uuid.uuid4())[:8]
+    
+    background_tasks.add_task(download_youtube_audio, req.url, video_id, req.mode)
+    return {"video_id": video_id, "status": "started"}
+
+@app.get("/youtube/status/{video_id}")
+async def youtube_get_status(video_id: str):
+    info = youtube_status.get(video_id, {"status": "unknown", "progress": 0})
+    return info
+
+@app.get("/youtube/audio/{video_id}")
+async def youtube_get_audio(video_id: str, karaoke: bool = False):
+    if karaoke:
+        filepath = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}_karaoke.mp3")
+    else:
+        filepath = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.mp3")
+    
+    if not os.path.exists(filepath):
+        return JSONResponse(status_code=404, content={"message": "Audio not found"})
+    
+    return FileResponse(filepath, media_type="audio/mpeg")
+
+# ============================================
+# STATIC FILE SERVING (Production/Bundled mode)
+# ============================================
+
+# Detect if running in bundled mode (PyInstaller) or development
+IS_BUNDLED = getattr(os.sys, 'frozen', False)
+
+if IS_BUNDLED:
+    # Serve frontend static files from bundled dist directory
+    import sys
+    FRONTEND_DIR = os.path.join(sys._MEIPASS, 'frontend_dist')
+else:
+    FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'dist')
+
+if os.path.exists(FRONTEND_DIR):
+    # Serve static assets (JS, CSS, images)
+    assets_dir = os.path.join(FRONTEND_DIR, 'assets')
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    @app.get("/")
+    async def serve_frontend():
+        index_path = os.path.join(FRONTEND_DIR, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse(content={"message": "JagatAudio API is running"})
+    
+    @app.get("/{full_path:path}")
+    async def serve_frontend_fallback(full_path: str):
+        # Try to serve static file first
+        file_path = os.path.join(FRONTEND_DIR, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Fallback to index.html for SPA routing
+        index_path = os.path.join(FRONTEND_DIR, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse(status_code=404, content={"message": "Not found"})
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    import sys
+    import threading
+    import webbrowser
+    import time
+    
+    if IS_BUNDLED:
+        # Prevent uvicorn 'isatty' error in noconsole mode
+        if sys.stdout is None or sys.stderr is None:
+            class DummyStream:
+                def write(self, data): pass
+                def flush(self): pass
+                def isatty(self): return False
+            sys.stdout = DummyStream()
+            sys.stderr = DummyStream()
+            
+        def open_browser():
+            time.sleep(1.5) # Wait for uvicorn to start
+            webbrowser.open("http://127.0.0.1:8000")
+            
+        threading.Thread(target=open_browser, daemon=True).start()
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
+    else:
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
