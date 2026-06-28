@@ -97,6 +97,8 @@ if %ERRORLEVEL% neq 0 (
         set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
     ) else if exist "C:\Program Files\Inno Setup 6\ISCC.exe" (
         set ISCC="C:\Program Files\Inno Setup 6\ISCC.exe"
+    ) else if exist "C:\Users\wisnu\AppData\Local\Programs\Inno Setup 6\ISCC.exe" (
+        set ISCC="C:\Users\wisnu\AppData\Local\Programs\Inno Setup 6\ISCC.exe"
     ) else (
         echo   WARNING: Inno Setup tidak ditemukan.
         echo   Download dari: https://jrsoftware.org/isdl.php

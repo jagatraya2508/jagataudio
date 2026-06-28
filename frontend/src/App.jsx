@@ -3,7 +3,7 @@ import * as Tone from 'tone';
 import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, MicOff, KeyRound, Copy, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
 import './index.css';
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = `http://${window.location.hostname}:8000`;
 
 const INSTRUMENTS = [
   { id: 'vocals', label: 'Vokal', icon: Mic2, color: '#ff477e' },
