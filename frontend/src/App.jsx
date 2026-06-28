@@ -61,7 +61,17 @@ function App() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [adminMsg, setAdminMsg] = useState('');
 
-  // YouTube Karaoke State
+  // YouTube to MP3 State
+  const [yt2mp3Url, setYt2mp3Url] = useState('');
+  const [yt2mp3SearchResults, setYt2mp3SearchResults] = useState([]);
+  const [yt2mp3IsSearching, setYt2mp3IsSearching] = useState(false);
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [yt2mp3Status, setYt2mp3Status] = useState('idle'); // idle, preparing, downloading, done, error
+  const [yt2mp3Progress, setYt2mp3Progress] = useState(0);
+  const [yt2mp3JobId, setYt2mp3JobId] = useState(null);
+  const [yt2mp3Error, setYt2mp3Error] = useState('');
+  const [yt2mp3Title, setYt2mp3Title] = useState('');
+
   const [ytUrl, setYtUrl] = useState('');
   const [ytVideoId, setYtVideoId] = useState(null); // internal ID from backend
   const [ytYoutubeId, setYtYoutubeId] = useState(null); // actual YouTube video ID
@@ -259,6 +269,34 @@ function App() {
     return () => clearInterval(interval);
   }, [status, fileId]);
 
+
+  // YouTube to MP3 polling
+  useEffect(() => {
+    let interval;
+    if (yt2mp3Status === 'downloading' && yt2mp3JobId) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/status/${yt2mp3JobId}`);
+          const data = await res.json();
+          if (data.progress !== undefined) setYt2mp3Progress(data.progress);
+          if (data.title) setYt2mp3Title(data.title);
+          
+          if (data.status === 'done') {
+            setYt2mp3Status('done');
+            setYt2mp3Progress(100);
+            clearInterval(interval);
+          } else if (data.status === 'error') {
+            setYt2mp3Status('error');
+            setYt2mp3Error(data.error || 'Terjadi kesalahan');
+            clearInterval(interval);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [yt2mp3Status, yt2mp3JobId]);
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -933,6 +971,23 @@ function App() {
         <header className="header">
           <div><h1>Jagat <span>Audio</span></h1><p>AI Stem Separation & Karaoke</p></div>
         </header>
+      {token && !showAdminPanel && (
+        <nav className="tab-navigation">
+          <button
+            className={`tab-btn ${activeTab === 'stems' ? 'active' : ''}`}
+            onClick={() => setActiveTab('stems')}
+          >
+            <Music size={18} /> Stem Separator
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
+            onClick={() => setActiveTab('yt2mp3')}
+          >
+            <Download size={18} /> YouTube to MP3
+          </button>
+        </nav>
+      )}
+
         <main className="main-content">
           <div className="license-loading">
             <Loader2 size={48} className="spinner" />
@@ -950,6 +1005,23 @@ function App() {
         <header className="header">
           <div><h1>Jagat <span>Audio</span></h1><p>AI Stem Separation & Karaoke</p></div>
         </header>
+      {token && !showAdminPanel && (
+        <nav className="tab-navigation">
+          <button
+            className={`tab-btn ${activeTab === 'stems' ? 'active' : ''}`}
+            onClick={() => setActiveTab('stems')}
+          >
+            <Music size={18} /> Stem Separator
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
+            onClick={() => setActiveTab('yt2mp3')}
+          >
+            <Download size={18} /> YouTube to MP3
+          </button>
+        </nav>
+      )}
+
         <main className="main-content">
           <div className="license-gate">
             <div className="license-card">
@@ -1075,7 +1147,7 @@ function App() {
         </div>
       )}
 
-      {/* Tab Navigation - only show when logged in and not in admin panel */}
+
       {token && !showAdminPanel && (
         <nav className="tab-navigation">
           <button
@@ -1085,10 +1157,10 @@ function App() {
             <Music size={18} /> Stem Separator
           </button>
           <button
-            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
-            onClick={() => setActiveTab('karaoke')}
+            className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
+            onClick={() => setActiveTab('yt2mp3')}
           >
-            <MonitorPlay size={18} /> YouTube Karaoke
+            <Download size={18} /> YouTube to MP3
           </button>
         </nav>
       )}
@@ -1486,209 +1558,181 @@ function App() {
           </div>
         )}
           </>
-        ) : activeTab === 'karaoke' ? (
-          /* ============================================
-             YOUTUBE KARAOKE TAB
-             ============================================ */
-          <div className="karaoke-container animate-fade-in">
-            {ytStatus === 'idle' && (
+        ) : activeTab === 'yt2mp3' ? (
+          <div className="yt2mp3-container animate-fade-in">
+            {yt2mp3Status === 'idle' && (
               <div className="yt-input-card glass-panel">
                 <div className="yt-input-header">
-                  <MonitorPlay size={48} className="yt-icon" />
-                  <h3>YouTube Karaoke</h3>
-                  <p>Paste link YouTube, ubah nada dasar, dan mulai karaoke!</p>
+                  <Download size={48} className="yt-icon" />
+                  <h3>YouTube to MP3 Converter</h3>
+                  <p>Paste link YouTube untuk mengunduh audio dengan cepat.</p>
                 </div>
-
-                <div className="yt-mode-selector">
-                  <button
-                    className={`yt-mode-btn ${ytMode === 'quick' ? 'active' : ''}`}
-                    onClick={() => setYtMode('quick')}
-                  >
-                    <Play size={16} /> Karaoke Cepat
-                    <span className="mode-desc">~15 detik, tanpa hapus vokal</span>
-                  </button>
-                  <button
-                    className={`yt-mode-btn ${ytMode === 'full' ? 'active' : ''}`}
-                    onClick={() => setYtMode('full')}
-                  >
-                    <MicOff size={16} /> Hapus Vokal + Karaoke
-                    <span className="mode-desc">~5-10 menit, AI hapus vokal</span>
+                <div className="yt-url-input" style={{ display: 'flex', gap: '0.5rem', position: 'relative', width: '100%' }}>
+                  <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      placeholder="Paste link ATAU ketik judul lagu... (contoh: Coldplay Yellow)"
+                      value={yt2mp3Url}
+                      onChange={(e) => setYt2mp3Url(e.target.value)}
+                      style={{ flex: 1, paddingRight: '40px' }}
+                    />
+                    <button 
+                      onClick={() => {
+                        if (!('webkitSpeechRecognition' in window)) {
+                          alert("Browser Anda tidak mendukung pencarian suara. Gunakan Google Chrome.");
+                          return;
+                        }
+                        const recognition = new window.webkitSpeechRecognition();
+                        recognition.lang = 'id-ID';
+                        recognition.interimResults = true; // Aktifkan pengetikan real-time
+                        
+                        recognition.onstart = () => {
+                          setIsVoiceActive(true);
+                          setYt2mp3Url(""); // Kosongkan saat mulai bicara
+                        };
+                        
+                        recognition.onresult = (event) => {
+                          let interimTranscript = '';
+                          for (let i = event.resultIndex; i < event.results.length; ++i) {
+                            if (event.results[i].isFinal) {
+                              setYt2mp3Url(event.results[i][0].transcript);
+                            } else {
+                              interimTranscript += event.results[i][0].transcript;
+                              setYt2mp3Url(interimTranscript); // Tampilkan sementara
+                            }
+                          }
+                        };
+                        
+                        recognition.onend = () => {
+                          setIsVoiceActive(false);
+                        };
+                        
+                        recognition.onerror = () => {
+                          setIsVoiceActive(false);
+                        };
+                        
+                        recognition.start();
+                      }}
+                      style={{ 
+                        position: 'absolute', right: '10px', 
+                        background: isVoiceActive ? 'rgba(255, 71, 126, 0.2)' : 'transparent', 
+                        border: 'none', 
+                        color: isVoiceActive ? '#fff' : '#ff477e', 
+                        cursor: 'pointer', 
+                        padding: '5px',
+                        borderRadius: '50%',
+                        transition: 'all 0.3s ease',
+                        boxShadow: isVoiceActive ? '0 0 10px rgba(255, 71, 126, 0.5)' : 'none'
+                      }}
+                      title="Gunakan Suara"
+                    >
+                      <Mic size={20} />
+                    </button>
+                  </div>
+                  <button className="yt-search-btn" style={{ flexShrink: 0 }} onClick={async () => {
+                    if(!yt2mp3Url.trim()) return;
+                    setYt2mp3IsSearching(true);
+                    setYt2mp3SearchResults([]);
+                    setYt2mp3Error('');
+                    try {
+                      const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/search`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ query: yt2mp3Url })
+                      });
+                      const data = await res.json();
+                      if(res.ok) {
+                        setYt2mp3SearchResults(data.results || []);
+                      } else {
+                        setYt2mp3Error(data.detail || 'Gagal mencari');
+                      }
+                    } catch(e) { setYt2mp3Error('Kesalahan jaringan saat mencari'); }
+                    setYt2mp3IsSearching(false);
+                  }} disabled={!yt2mp3Url.trim() || yt2mp3IsSearching}>
+                    {yt2mp3IsSearching ? <Loader2 size={20} className="spinner" /> : <Search size={20} />} Cari Lagu
                   </button>
                 </div>
-
-                <div className="yt-url-input">
-                  <input
-                    type="text"
-                    placeholder="Paste link YouTube di sini... (contoh: https://youtu.be/xxxxx)"
-                    value={ytUrl}
-                    onChange={(e) => setYtUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleYtPrepare()}
-                  />
-                  <button className="yt-search-btn" onClick={handleYtPrepare} disabled={!ytUrl.trim()}>
-                    <Search size={20} /> Proses
-                  </button>
-                </div>
-
-                {ytError && (
-                  <div className="auth-message error">{ytError}</div>
+                {yt2mp3Error && <div className="auth-message error">{yt2mp3Error}</div>}
+                
+                {yt2mp3SearchResults.length > 0 && (
+                  <div className="search-results-container" style={{ marginTop: '1.5rem', textAlign: 'left' }}>
+                    <h4 style={{ marginBottom: '1rem', color: '#fff' }}>Hasil Pencarian:</h4>
+                    <div className="search-results-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                      {yt2mp3SearchResults.map((result, idx) => (
+                        <div key={idx} className="search-result-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.05)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                          <div className="result-info" style={{ flex: 1, marginRight: '1rem', overflow: 'hidden' }}>
+                            <div style={{ fontWeight: 'bold', color: '#fff', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{result.title}</div>
+                            <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)', marginTop: '4px', display: 'flex', gap: '1rem' }}>
+                              <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }}/> {result.duration ? Math.floor(result.duration / 60) + ':' + (result.duration % 60).toString().padStart(2, '0') : '--:--'}</span>
+                              <span style={{ color: result.source === 'SoundCloud' ? '#ff9f1c' : '#ff477e' }}>{result.source}</span>
+                            </div>
+                          </div>
+                          <button className="process-btn" style={{ flexShrink: 0, width: 'auto', minWidth: '90px', padding: '0.5rem 1rem', fontSize: '0.9rem', display: 'flex', justifyContent: 'center', alignItems: 'center' }} onClick={async () => {
+                            setYt2mp3Status('preparing');
+                            setYt2mp3Error('');
+                            setYt2mp3Progress(0);
+                            try {
+                              const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/prepare`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                body: JSON.stringify({ url: result.url })
+                              });
+                              const data = await res.json();
+                              if(res.ok) {
+                                setYt2mp3JobId(data.job_id);
+                                setYt2mp3Status('downloading');
+                              } else {
+                                setYt2mp3Status('error'); setYt2mp3Error(data.detail || 'Gagal memproses');
+                              }
+                            } catch(e) { setYt2mp3Status('error'); setYt2mp3Error('Kesalahan jaringan'); }
+                          }}>
+                            <Download size={16} style={{ marginRight: '4px' }} /> Unduh
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
-
-            {(ytStatus === 'preparing' || ytStatus === 'downloading' || ytStatus === 'separating') && (
+            {(yt2mp3Status === 'preparing' || yt2mp3Status === 'downloading') && (
               <div className="loading-card glass-panel">
                 <Loader2 size={48} className="spinner" />
-                <h3>
-                  {ytStatus === 'preparing' && 'Memproses URL YouTube...'}
-                  {ytStatus === 'downloading' && 'Mengunduh Audio dari YouTube...'}
-                  {ytStatus === 'separating' && 'AI Sedang Menghapus Vokal...'}
-                </h3>
-                {ytTitle && <p className="yt-loading-title">{ytTitle}</p>}
-                
+                <h3>{yt2mp3Status === 'preparing' ? 'Mempersiapkan...' : 'Mengunduh Audio...'}</h3>
                 <div className="progress-section">
                   <div className="progress-info">
-                    <span className="progress-percent">{ytProgress}%</span>
-                    <span className="progress-eta">
-                      {ytStatus === 'downloading' ? 'Mengunduh audio...' : 'Memproses dengan Demucs...'}
-                    </span>
+                    <span className="progress-percent">{yt2mp3Progress}%</span>
+                    <span className="progress-eta">Mengunduh dari YouTube...</span>
                   </div>
                   <div className="progress-bar-container">
-                    <div className="progress-bar-fill" style={{ width: `${ytProgress}%` }}></div>
+                    <div className="progress-bar-fill" style={{ width: `${yt2mp3Progress}%` }}></div>
                   </div>
                 </div>
-
-                <button className="cancel-btn" style={{ maxWidth: '200px', margin: '1rem auto 0' }} onClick={resetYtKaraoke}>
-                  <X size={16} /> Batalkan
+                <button className="cancel-btn" style={{ maxWidth: '200px', margin: '1rem auto 0' }} onClick={() => { setYt2mp3Status('idle'); setYt2mp3Url(''); }}>
+                  <X size={16} /> Batal
                 </button>
               </div>
             )}
-
-            {ytStatus === 'error' && (
+            {yt2mp3Status === 'done' && (
+              <div className="upload-card" style={{ borderColor: '#2ec4b6' }}>
+                <CheckCircle size={48} color="#2ec4b6" style={{ marginBottom: '1rem' }} />
+                <h3 style={{ color: '#2ec4b6' }}>Audio Siap Diunduh!</h3>
+                <p>{yt2mp3Title}</p>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
+                  <a href={`${API_BASE_URL}/youtube-to-mp3/download/${yt2mp3JobId}`} className="process-btn" style={{ textDecoration: 'none', padding: '0.8rem 1.5rem' }} download>
+                    <Download size={18} /> Simpan MP3
+                  </a>
+                  <button className="cancel-btn" onClick={() => { setYt2mp3Status('idle'); setYt2mp3Url(''); }}>
+                    <RefreshCw size={16} /> Unduh Lainnya
+                  </button>
+                </div>
+              </div>
+            )}
+            {yt2mp3Status === 'error' && (
               <div className="upload-card" style={{ borderColor: '#ff477e' }}>
-                <h3 style={{ color: '#ff477e' }}>Gagal Memproses</h3>
-                <p>{ytError}</p>
-                <button className="upload-btn" onClick={resetYtKaraoke}>Coba Lagi</button>
-              </div>
-            )}
-
-            {ytStatus === 'ready' && (
-              <div className="yt-karaoke-player">
-                {/* YouTube Video Embed (muted - visual only) */}
-                {ytYoutubeId && (
-                  <div className="yt-video-wrapper">
-                    <iframe
-                      ref={ytIframeRef}
-                      src={`https://www.youtube.com/embed/${ytYoutubeId}?autoplay=0&mute=1&controls=0&modestbranding=1&rel=0`}
-                      title={ytTitle}
-                      frameBorder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                      className="yt-video-iframe"
-                    />
-                    <div className="yt-video-overlay">
-                      <span className="yt-muted-badge">🔇 Video (audio terpisah untuk pitch control)</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Song Info */}
-                <div className="yt-song-info glass-panel">
-                  <div className="yt-song-details">
-                    <Music size={24} className="yt-song-icon" />
-                    <div>
-                      <h3 className="yt-song-title">{ytTitle}</h3>
-                      <p className="yt-song-duration">Durasi: {formatTime(ytAudioDuration || ytDuration)}</p>
-                    </div>
-                  </div>
-
-                  {/* Karaoke/Original toggle */}
-                  {ytKaraokeReady && (
-                    <div className="yt-audio-toggle">
-                      <button
-                        className={`yt-toggle-btn ${!ytUseKaraoke ? 'active' : ''}`}
-                        onClick={() => switchYtAudioSource(false)}
-                      >
-                        <Mic size={14} /> Original
-                      </button>
-                      <button
-                        className={`yt-toggle-btn ${ytUseKaraoke ? 'active' : ''}`}
-                        onClick={() => switchYtAudioSource(true)}
-                      >
-                        <MicOff size={14} /> Karaoke
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Pitch Control */}
-                <div className="yt-pitch-control glass-panel">
-                  <div className="pitch-header">
-                    <h4>🎵 Kontrol Nada Dasar</h4>
-                    <span className={`pitch-display ${ytPitch !== 0 ? 'shifted' : ''}`}>
-                      {ytPitch === 0 ? 'Original Key' : `${ytPitch > 0 ? '+' : ''}${ytPitch} Semitone${Math.abs(ytPitch) !== 1 ? 's' : ''}`}
-                    </span>
-                  </div>
-
-                  <div className="pitch-buttons">
-                    <button className="pitch-btn pitch-down-big" onClick={() => handleYtPitchChange(ytPitch - 3)} disabled={ytPitch <= -12}>
-                      -3
-                    </button>
-                    <button className="pitch-btn pitch-down" onClick={() => handleYtPitchChange(ytPitch - 1)} disabled={ytPitch <= -12}>
-                      <ChevronDown size={20} /> -1
-                    </button>
-                    <button className="pitch-btn pitch-reset" onClick={() => handleYtPitchChange(0)}>
-                      <RotateCcw size={16} /> Reset
-                    </button>
-                    <button className="pitch-btn pitch-up" onClick={() => handleYtPitchChange(ytPitch + 1)} disabled={ytPitch >= 12}>
-                      <ChevronUp size={20} /> +1
-                    </button>
-                    <button className="pitch-btn pitch-up-big" onClick={() => handleYtPitchChange(ytPitch + 3)} disabled={ytPitch >= 12}>
-                      +3
-                    </button>
-                  </div>
-
-                  <div className="pitch-slider-row">
-                    <span className="pitch-label">-12</span>
-                    <input
-                      type="range"
-                      min="-12"
-                      max="12"
-                      step="1"
-                      value={ytPitch}
-                      onChange={(e) => handleYtPitchChange(parseInt(e.target.value))}
-                      className="accent-slider pitch-slider"
-                    />
-                    <span className="pitch-label">+12</span>
-                  </div>
-                </div>
-
-                {/* Playback Controls */}
-                <div className="yt-playback-controls glass-panel">
-                  <div className="yt-playback-row">
-                    <button className={`play-btn ${ytIsPlaying ? 'playing' : ''}`} onClick={toggleYtPlay}>
-                      {ytIsPlaying ? <Pause size={28} /> : <Play size={28} />}
-                    </button>
-
-                    <div className="yt-timeline">
-                      <span className="time-display">{formatTime(ytCurrentTime)}</span>
-                      <input
-                        type="range"
-                        min="0"
-                        max={ytAudioDuration || 100}
-                        step="0.1"
-                        value={ytCurrentTime}
-                        onChange={handleYtSeek}
-                        className="original-slider"
-                      />
-                      <span className="time-display">{formatTime(ytAudioDuration)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* New Song Button */}
-                <button className="cancel-btn" style={{ maxWidth: '250px', margin: '0 auto' }} onClick={resetYtKaraoke}>
-                  <RefreshCw size={16} /> Pilih Lagu Lain
-                </button>
+                <h3 style={{ color: '#ff477e' }}>Gagal Mengunduh</h3>
+                <p>{yt2mp3Error}</p>
+                <button className="upload-btn" onClick={() => setYt2mp3Status('idle')}>Coba Lagi</button>
               </div>
             )}
           </div>

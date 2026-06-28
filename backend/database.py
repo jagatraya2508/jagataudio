@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-DB_PATH = "users.db"
+DB_PATH = "jagataudio.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)

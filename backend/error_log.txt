@@ -1,0 +1,109 @@
+Demucs failed with returncode: 3221225786
+Logs:
+Selected model is a bag of 1 models. You will see that many progress bars per track.
+Separated tracks will be stored in D:\Programer\jagataudio\backend\separated\htdemucs_6s
+Separating track D:\Programer\jagataudio\backend\uploads\8f987109-3b71-4d04-a763-1e5dbbeacc71.mp3
+0%|                                                                                  | 0.0/277.5 [00:00<?, ?seconds/s]
+1%|4                                                                         | 1.5/277.5 [00:05<15:49,  3.44s/seconds]
+1%|8                                                                         | 3.0/277.5 [00:10<15:32,  3.40s/seconds]
+2%|#2                                                                        | 4.5/277.5 [00:15<15:08,  3.33s/seconds]
+2%|#6                                                                        | 6.0/277.5 [00:19<14:46,  3.27s/seconds]
+3%|##                                                                        | 7.5/277.5 [00:24<14:34,  3.24s/seconds]
+3%|##4                                                                       | 9.0/277.5 [00:29<14:43,  3.29s/seconds]
+4%|##7                                                                      | 10.5/277.5 [00:34<14:49,  3.33s/seconds]
+4%|###1                                                                     | 12.0/277.5 [00:39<14:18,  3.23s/seconds]
+5%|###5                                                                     | 13.5/277.5 [00:43<13:12,  3.00s/seconds]
+5%|###9                                                                     | 15.0/277.5 [00:46<12:14,  2.80s/seconds]
+6%|####3                                                                    | 16.5/277.5 [00:50<11:52,  2.73s/seconds]
+6%|####7                                                                    | 18.0/277.5 [00:54<11:31,  2.66s/seconds]
+7%|#####1                                                                   | 19.5/277.5 [00:57<11:10,  2.60s/seconds]
+8%|#####5                                                                   | 21.0/277.5 [01:02<11:27,  2.68s/seconds]
+8%|#####9                                                                   | 22.5/277.5 [01:06<11:24,  2.69s/seconds]
+9%|######3                                                                  | 24.0/277.5 [01:09<11:03,  2.62s/seconds]
+9%|######7                                                                  | 25.5/277.5 [01:13<10:47,  2.57s/seconds]
+10%|#######1                                                                 | 27.0/277.5 [01:17<10:46,  2.58s/seconds]
+10%|#######4                                                                 | 28.5/277.5 [01:21<10:39,  2.57s/seconds]
+11%|#######8                                                                 | 30.0/277.5 [01:24<10:24,  2.52s/seconds]
+11%|########2                                                                | 31.5/277.5 [01:29<10:31,  2.57s/seconds]
+12%|########6                                                                | 33.0/277.5 [01:33<10:40,  2.62s/seconds]
+12%|#########                                                                | 34.5/277.5 [01:37<10:39,  2.63s/seconds]
+13%|#########4                                                               | 36.0/277.5 [01:40<10:17,  2.56s/seconds]
+14%|#########8                                                               | 37.5/277.5 [01:44<10:25,  2.61s/seconds]
+14%|##########2                                                              | 39.0/277.5 [01:51<12:15,  3.09s/seconds]
+15%|##########6                                                              | 40.5/277.5 [01:55<12:18,  3.12s/seconds]
+15%|###########                                                              | 42.0/277.5 [02:00<12:17,  3.13s/seconds]
+16%|###########4                                                             | 43.5/277.5 [02:06<13:24,  3.44s/seconds]
+16%|###########8                                                             | 45.0/277.5 [02:12<13:31,  3.49s/seconds]
+16%|###########8                                                             | 45.0/277.5 [02:15<11:38,  3.00s/seconds]
+Traceback (most recent call last):
+File "<frozen runpy>", line 198, in _run_module_as_main
+File "<frozen runpy>", line 88, in _run_code
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\__main__.py", line 10, in <module>
+main()
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\separate.py", line 173, in main
+sources = apply_model(model, wav[None], device=args.device, shifts=args.shifts,
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\apply.py", line 189, in apply_model
+out = apply_model(sub_model, mix, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\apply.py", line 216, in apply_model
+shifted_out = apply_model(model, shifted, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\apply.py", line 250, in apply_model
+chunk_out = future.result()
+^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\utils.py", line 129, in result
+return self.func(*self.args, **self.kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\apply.py", line 271, in apply_model
+out = model(padded_mix)
+^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+return self._call_impl(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+return forward_call(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\htdemucs.py", line 603, in forward
+x, pre = decode(x, skip, lengths.pop(-1))
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+return self._call_impl(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+return forward_call(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\hdemucs.py", line 320, in forward
+y = self.dconv(y)
+^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+return self._call_impl(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+return forward_call(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\demucs\demucs.py", line 153, in forward
+x = x + layer(x)
+^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+return self._call_impl(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+return forward_call(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\container.py", line 253, in forward
+input = module(input)
+^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+return self._call_impl(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+return forward_call(*args, **kwargs)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\conv.py", line 385, in forward
+return self._conv_forward(input, self.weight, self.bias)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "D:\Programer\jagataudio\backend\venv\Lib\site-packages\torch\nn\modules\conv.py", line 380, in _conv_forward
+return F.conv1d(
+^^^^^^^^^
+KeyboardInterrupt

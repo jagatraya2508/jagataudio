@@ -9,7 +9,7 @@ backend/youtube_audio/
 backend/*.mp3
 backend/*.wav
 backend/*.mid
-backend/users.db
+backend/jagataudio.db
 
 # License (SENSITIVE!)
 backend/keys/private_key.pem

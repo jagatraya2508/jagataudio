@@ -295,7 +295,8 @@ def run_demucs(filepath: str, file_id: str):
             "-n", "htdemucs_6s",
             "-o", os.path.abspath(OUTPUT_DIR),
             "--mp3",
-            "--segment", "2",
+            "--mp3-preset", "7",
+            "-j", "2",
             os.path.abspath(filepath)
         ]
         
@@ -455,11 +456,12 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
     mix_inputs = "".join([f"[a{i}]" for i in range(input_idx)])
     filters.append(f"{mix_inputs}amix=inputs={input_idx}:normalize=0[mix]")
     
-    pitch = params.pitch
+    pitch_semitones = params.pitch
     tempo = params.tempo
     
-    if pitch != 0 or tempo != 1.0:
-        filters.append(f"[mix]rubberband=pitch={pitch}:tempo={tempo}[out]")
+    if pitch_semitones != 0 or tempo != 1.0:
+        pitch_factor = 2 ** (pitch_semitones / 12.0)
+        filters.append(f"[mix]rubberband=pitch={pitch_factor}:tempo={tempo}[out]")
         map_out = "[out]"
     else:
         map_out = "[mix]"
@@ -526,171 +528,174 @@ async def download_tab(filename: str):
     return FileResponse(filepath, media_type="text/plain", filename=filename)
 
 # ============================================
-# YOUTUBE KARAOKE ROUTES
+
 # ============================================
+# YOUTUBE TO MP3 ROUTES
+# ============================================
+import yt_dlp
 
-YOUTUBE_AUDIO_DIR = "youtube_audio"
-os.makedirs(YOUTUBE_AUDIO_DIR, exist_ok=True)
+YT2MP3_DIR = "yt2mp3_downloads"
+os.makedirs(YT2MP3_DIR, exist_ok=True)
 
-youtube_status = {}
+yt2mp3_status = {}
 
-class YouTubePrepareRequest(BaseModel):
+class Yt2Mp3Request(BaseModel):
     url: str
-    mode: str = "quick"  # "quick" or "full" (with vocal removal)
 
-def download_youtube_audio(url: str, video_id: str, mode: str):
-    """Download audio from YouTube using yt-dlp"""
+def run_yt2mp3_download(url: str, job_id: str):
+    yt2mp3_status[job_id] = {"status": "downloading", "progress": 5, "title": "", "filename": ""}
+    
+    def hook(d):
+        if d['status'] == 'downloading':
+            try:
+                # Remove ANSI escape sequences from percentage
+                pct_str = d.get('_percent_str', '0%').replace('\x1b[0;94m', '').replace('\x1b[0m', '').strip()
+                if pct_str.endswith('%'):
+                    pct = float(pct_str[:-1])
+                    new_prog = 10 + int(pct * 0.8)
+                    # Hanya maju, tidak boleh mundur
+                    if new_prog > yt2mp3_status[job_id]["progress"]:
+                        yt2mp3_status[job_id]["progress"] = new_prog
+            except:
+                pass
+        elif d['status'] == 'finished':
+            yt2mp3_status[job_id]["progress"] = 90
+            
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'outtmpl': os.path.join(YT2MP3_DIR, f"{job_id}.%(ext)s"),
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'progress_hooks': [hook],
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {'youtube': {'player_client': ['ios', 'android']}},
+    }
+    
     try:
-        youtube_status[video_id] = {"status": "downloading", "progress": 5, "title": "", "thumbnail": "", "duration": 0}
-        print(f"[YT] Starting download for {url} (mode={mode})")
-        
-        import yt_dlp
-        
-        output_path = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.mp3")
-        
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-                downloaded = d.get('downloaded_bytes', 0)
-                if total > 0:
-                    pct = int((downloaded / total) * 70) + 10  # 10-80%
-                    youtube_status[video_id]["progress"] = min(pct, 80)
-            elif d['status'] == 'finished':
-                print(f"[YT] Download finished, converting...")
-                youtube_status[video_id]["progress"] = 80
-        
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.%(ext)s"),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'progress_hooks': [progress_hook],
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        # Download and extract info in one call
-        print(f"[YT] Extracting info + downloading audio...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            youtube_status[video_id]["title"] = info.get('title', 'Unknown')
-            youtube_status[video_id]["thumbnail"] = info.get('thumbnail', '')
-            youtube_status[video_id]["duration"] = info.get('duration', 0)
-            youtube_status[video_id]["youtube_id"] = info.get('id', '')
-            print(f"[YT] Got info: {info.get('title', 'Unknown')} ({info.get('duration', 0)}s)")
-        
-        youtube_status[video_id]["progress"] = 80
-        
-        if not os.path.exists(output_path):
-            # Check for other extensions and convert
-            for ext in ['webm', 'opus', 'm4a', 'wav', 'ogg']:
-                alt_path = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.{ext}")
-                if os.path.exists(alt_path):
-                    # ffmpeg convert to mp3
-                    subprocess.run([
-                        "ffmpeg", "-y", "-i", alt_path,
-                        "-codec:a", "libmp3lame", "-b:a", "192k",
-                        output_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    os.remove(alt_path)
-                    break
-        
-        if not os.path.exists(output_path):
-            youtube_status[video_id]["status"] = "error"
-            youtube_status[video_id]["error"] = "Gagal mengunduh audio"
-            return
-        
-        youtube_status[video_id]["progress"] = 90
-        
-        # If full mode, run Demucs for vocal separation
-        if mode == "full":
-            youtube_status[video_id]["status"] = "separating"
-            youtube_status[video_id]["progress"] = 0
-            
-            import sys
-            command = [
-                sys.executable, "-m", "demucs",
-                "-n", "htdemucs",
-                "--two-stems", "vocals",
-                "-o", OUTPUT_DIR,
-                "--mp3",
-                output_path
-            ]
-            
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-            
-            import re
-            while True:
-                char = process.stdout.read(1)
-                if not char:
-                    break
-                if char == '\r' or char == '\n':
-                    pass
-            
-            process.wait()
-            
-            if process.returncode == 0:
-                # The output will be in OUTPUT_DIR/htdemucs/{video_id}/no_vocals.mp3
-                karaoke_dir = os.path.join(OUTPUT_DIR, "htdemucs", video_id)
-                karaoke_file = os.path.join(karaoke_dir, "no_vocals.mp3")
-                
-                if os.path.exists(karaoke_file):
-                    # Copy karaoke audio to youtube_audio dir
-                    karaoke_output = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}_karaoke.mp3")
-                    shutil.copy2(karaoke_file, karaoke_output)
-                    youtube_status[video_id]["karaoke_ready"] = True
-                else:
-                    youtube_status[video_id]["karaoke_ready"] = False
+            if url.startswith("smartsearch:"):
+                query = url.replace("smartsearch:", "", 1)
+                try:
+                    # Coba SoundCloud dulu (sangat cepat, minim throttle)
+                    info = ydl.extract_info(f"scsearch1:{query}", download=True)
+                except Exception:
+                    # Fallback ke YouTube jika tidak ditemukan di SoundCloud
+                    info = ydl.extract_info(f"ytsearch1:{query}", download=True)
             else:
-                youtube_status[video_id]["karaoke_ready"] = False
-        
-        youtube_status[video_id]["status"] = "done"
-        youtube_status[video_id]["progress"] = 100
-        
+                info = ydl.extract_info(url, download=True)
+            
+            if 'entries' in info and len(info['entries']) > 0:
+                title = info['entries'][0].get('title', 'Unknown')
+            else:
+                title = info.get('title', 'Unknown')
+                
+            yt2mp3_status[job_id]["title"] = title
+            yt2mp3_status[job_id]["filename"] = f"{job_id}.mp3"
+            yt2mp3_status[job_id]["status"] = "done"
+            yt2mp3_status[job_id]["progress"] = 100
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"YouTube download error: {e}")
-        youtube_status[video_id] = {
-            "status": "error",
-            "progress": 0,
-            "error": str(e)
-        }
+        print(f"YT2MP3 Error: {e}")
+        yt2mp3_status[job_id]["status"] = "error"
+        yt2mp3_status[job_id]["error"] = "Gagal mengunduh audio"
 
-@app.post("/youtube/prepare")
-async def youtube_prepare(req: YouTubePrepareRequest, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
-    # Generate a unique video_id for this request
-    video_id = str(uuid.uuid4())[:8]
+class SearchRequest(BaseModel):
+    query: str
+
+@app.post("/youtube-to-mp3/search")
+async def yt2mp3_search(req: SearchRequest, current_user: dict = Depends(get_current_user)):
+    query = req.query.strip()
+    results = []
     
-    background_tasks.add_task(download_youtube_audio, req.url, video_id, req.mode)
-    return {"video_id": video_id, "status": "started"}
-
-@app.get("/youtube/status/{video_id}")
-async def youtube_get_status(video_id: str):
-    info = youtube_status.get(video_id, {"status": "unknown", "progress": 0})
-    return info
-
-@app.get("/youtube/audio/{video_id}")
-async def youtube_get_audio(video_id: str, karaoke: bool = False):
-    if karaoke:
-        filepath = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}_karaoke.mp3")
+    ydl_opts = {
+        'quiet': True,
+        'extract_flat': True,
+        'no_warnings': True,
+    }
+    
+    if query.startswith("http"):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(query, download=False)
+                results.append({
+                    "title": info.get("title", "Unknown"),
+                    "url": query,
+                    "duration": info.get("duration"),
+                    "source": "Direct Link"
+                })
+        except Exception:
+            pass
     else:
-        filepath = os.path.join(YOUTUBE_AUDIO_DIR, f"{video_id}.mp3")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Get from SoundCloud
+                try:
+                    sc_info = ydl.extract_info(f"scsearch3:{query}", download=False)
+                    if 'entries' in sc_info:
+                        for entry in sc_info['entries']:
+                            results.append({
+                                "title": entry.get("title", "Unknown"),
+                                "url": entry.get("url"),
+                                "duration": entry.get("duration"),
+                                "source": "SoundCloud"
+                            })
+                except Exception:
+                    pass
+                
+                # Get from YouTube
+                try:
+                    yt_info = ydl.extract_info(f"ytsearch3:{query}", download=False)
+                    if 'entries' in yt_info:
+                        for entry in yt_info['entries']:
+                            results.append({
+                                "title": entry.get("title", "Unknown"),
+                                "url": entry.get("url"),
+                                "duration": entry.get("duration"),
+                                "source": "YouTube"
+                            })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+            
+    return {"results": results}
+
+@app.post("/youtube-to-mp3/prepare")
+async def yt2mp3_prepare(req: Yt2Mp3Request, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
+    job_id = str(uuid.uuid4())
+    url = req.url.strip()
+    if not url.startswith("http"):
+        url = f"smartsearch:{url}"
+    background_tasks.add_task(run_yt2mp3_download, url, job_id)
+    return {"job_id": job_id}
+
+@app.get("/youtube-to-mp3/status/{job_id}")
+async def yt2mp3_get_status(job_id: str):
+    return yt2mp3_status.get(job_id, {"status": "unknown"})
+
+@app.get("/youtube-to-mp3/download/{job_id}")
+async def yt2mp3_download(job_id: str):
+    info = yt2mp3_status.get(job_id)
+    if not info or info["status"] != "done":
+        return JSONResponse(status_code=404, content={"message": "Not ready"})
     
+    filepath = os.path.join(YT2MP3_DIR, f"{job_id}.mp3")
     if not os.path.exists(filepath):
-        return JSONResponse(status_code=404, content={"message": "Audio not found"})
+        return JSONResponse(status_code=404, content={"message": "File not found on disk"})
     
-    return FileResponse(filepath, media_type="audio/mpeg")
+    safe_title = "".join(c for c in info.get("title", "audio") if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    download_name = f"{safe_title}.mp3"
+    
+    return FileResponse(filepath, media_type="audio/mpeg", filename=download_name)
 
 # ============================================
-# STATIC FILE SERVING (Production/Bundled mode)
+# FRONTEND & SPA CATCH-ALL
 # ============================================
-
-# Detect if running in bundled mode (PyInstaller) or development
-IS_BUNDLED = getattr(os.sys, 'frozen', False)
+import sys
+IS_BUNDLED = getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
 
 if IS_BUNDLED:
     # Serve frontend static files from bundled dist directory
@@ -749,4 +754,3 @@ if __name__ == "__main__":
         uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
     else:
         uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
