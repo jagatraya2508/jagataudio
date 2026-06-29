@@ -53,8 +53,8 @@ class LicenseGeneratorApp:
         # Duration
         ttk.Label(form_frame, text="Durasi Lisensi:").grid(row=4, column=0, sticky=tk.W, pady=5)
         self.duration_var = tk.StringVar()
-        duration_options = ["3 Bulan (3m)", "6 Bulan (6m)", "1 Tahun (1y)"]
-        self.duration_var.set(duration_options[2]) # Default 1y
+        duration_options = ["1 Menit (1menit)", "1 Jam (1jam)", "1 Hari (1hari)", "3 Bulan (3m)", "6 Bulan (6m)", "1 Tahun (1y)"]
+        self.duration_var.set(duration_options[5]) # Default 1y
         ttk.Combobox(form_frame, textvariable=self.duration_var, values=duration_options, state="readonly", width=20).grid(row=5, column=0, sticky=tk.W, pady=(0, 20))
         
         # Generate Button
@@ -71,7 +71,10 @@ class LicenseGeneratorApp:
             
         # Parse duration
         duration_key = "1y"
-        if "3m" in dur_str: duration_key = "3m"
+        if "1menit" in dur_str: duration_key = "1menit"
+        elif "1jam" in dur_str: duration_key = "1jam"
+        elif "1hari" in dur_str: duration_key = "1hari"
+        elif "3m" in dur_str: duration_key = "3m"
         elif "6m" in dur_str: duration_key = "6m"
         
         try:

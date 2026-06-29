@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['D:\\Programer\\jagataudio\\backend\\license_gui.py'],
+    ['d:\\Programer\\jagataudio\\backend\\license_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('D:\\Programer\\jagataudio\\backend\\keys\\private_key.pem', 'keys')],
+    datas=[('d:\\Programer\\jagataudio\\backend\\keys\\private_key.pem', 'keys')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

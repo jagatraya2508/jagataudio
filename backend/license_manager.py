@@ -212,6 +212,9 @@ def _load_public_key():
 # ============================================
 
 DURATION_MAP = {
+    '1menit': 1/(24*60),
+    '1jam': 1/24,
+    '1hari': 1,
     '3m': 90,      # 3 months (~90 days)
     '6m': 180,     # 6 months (~180 days)
     '1y': 365,     # 1 year
@@ -276,7 +279,11 @@ def create_license(hardware_id: str, duration: str, customer_name: str = ""):
     
     # Save license file
     short_hwid = hardware_id.replace('-', '')[:12]
-    lic_filename = f"JagatAudio_{short_hwid}_{duration}.lic"
+    if customer_name:
+        safe_name = "".join([c if c.isalnum() else "_" for c in customer_name])
+        lic_filename = f"{safe_name}_JagatAudio_{short_hwid}_{duration}.lic"
+    else:
+        lic_filename = f"JagatAudio_{short_hwid}_{duration}.lic"
     lic_path = os.path.join(os.getcwd(), lic_filename)
     
     with open(lic_path, 'w', encoding='utf-8') as f:
