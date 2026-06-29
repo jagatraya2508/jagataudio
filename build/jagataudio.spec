@@ -43,10 +43,15 @@ hidden_imports = [
     # ML Libraries
     'basic_pitch', 'basic_pitch.inference', 'basic_pitch.models',
     'mido', 'demucs', 'demucs.api', 'demucs.apply', 'demucs.pretrained', 'demucs.htdemucs',
-    'torch', 'torchaudio', 'torchvision', 'soundfile'
+    'torch', 'torchaudio', 'torchvision', 'soundfile',
+    # YouTube DL dependencies
+    'yt_dlp', 'yt_dlp.extractor', 'yt_dlp.extractor.youtube', 'yt_dlp.postprocessor', 'yt_dlp.postprocessor.ffmpeg',
+    'mutagen', 'brotli', 'certifi', 'websockets', 'urllib3'
 ]
+hidden_imports += collect_submodules('yt_dlp')
 hidden_imports += collect_submodules('basic_pitch')
 hidden_imports += collect_submodules('demucs')
+hidden_imports += collect_submodules('torchaudio')
 
 # Frontend static build
 if os.path.exists(FRONTEND_DIST):
@@ -56,6 +61,15 @@ if os.path.exists(FRONTEND_DIST):
 public_key = os.path.join(KEYS_DIR, 'public_key.pem')
 if os.path.exists(public_key):
     datas.append((public_key, 'keys'))
+
+# Add bundled FFmpeg and FFprobe
+FFMPEG_PATH = r"C:\Users\wisnu\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe"
+if os.path.exists(FFMPEG_PATH):
+    datas.append((FFMPEG_PATH, '.'))
+
+FFPROBE_PATH = r"C:\Users\wisnu\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffprobe.exe"
+if os.path.exists(FFPROBE_PATH):
+    datas.append((FFPROBE_PATH, '.'))
 
 a = Analysis(
     [os.path.join(BACKEND_DIR, 'main.py')],

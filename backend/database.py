@@ -1,7 +1,14 @@
 import sqlite3
 import os
+import sys
 
-DB_PATH = "jagataudio.db"
+if getattr(sys, 'frozen', False):
+    app_data = os.path.join(os.environ.get('APPDATA', ''), 'JagatAudio')
+else:
+    app_data = os.path.dirname(os.path.abspath(__file__))
+
+os.makedirs(app_data, exist_ok=True)
+DB_PATH = os.path.join(app_data, "jagataudio.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)

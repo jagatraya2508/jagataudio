@@ -25,6 +25,7 @@ build/pyinstaller_output/
 build/pyinstaller_work/
 build/installer_output/
 build/LICENSE.txt
+dist/
 
 # OS
 .DS_Store
@@ -32,3 +33,6 @@ Thumbs.db
 
 # General
 sample.mp3
+*.mp4
+*.wfp
+LicenseAdmin/JagatAudio_9064E8D4865C_6m.lic

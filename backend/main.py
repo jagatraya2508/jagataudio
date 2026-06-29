@@ -5,6 +5,38 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
+import sys
+import multiprocessing
+
+if sys.platform.startswith('win'):
+    multiprocessing.freeze_support()
+
+if len(sys.argv) >= 3 and sys.argv[1] == "-m" and sys.argv[2] == "demucs":
+    import demucs.separate
+    status_file = None
+    if "--status-file" in sys.argv:
+        idx = sys.argv.index("--status-file")
+        status_file = sys.argv[idx + 1]
+        del sys.argv[idx:idx+2]
+    
+    if status_file:
+        f = open(status_file, "w", encoding="utf-8")
+        sys.stderr = f
+        sys.stdout = f
+
+    sys.argv = [sys.argv[0]] + sys.argv[3:]
+    sys.exit(demucs.separate.main())
+
+# Ensure bundled ffmpeg can be found by adding exe dir to PATH
+if getattr(sys, 'frozen', False):
+    meipass = sys._MEIPASS
+    if meipass not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = meipass + os.pathsep + os.environ.get("PATH", "")
+        
+    exe_dir = os.path.dirname(sys.executable)
+    if exe_dir not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
+
 import shutil
 import subprocess
 import uuid
@@ -65,8 +97,16 @@ class LicenseMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(LicenseMiddleware)
 
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "separated"
+import sys
+import os
+
+if getattr(sys, 'frozen', False):
+    app_data = os.path.join(os.environ.get('APPDATA', ''), 'JagatAudio')
+else:
+    app_data = os.path.dirname(os.path.abspath(__file__))
+
+UPLOAD_DIR = os.path.join(app_data, "uploads")
+OUTPUT_DIR = os.path.join(app_data, "separated")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -290,8 +330,19 @@ def run_demucs(filepath: str, file_id: str):
         import sys
         import re
         import traceback
+        import time
+        import os
+        
+        status_file_path = os.path.join(os.path.abspath(UPLOAD_DIR), f"{file_id}_demucs_status.txt")
+        error_log_path = os.path.join(os.path.abspath(UPLOAD_DIR), f"{file_id}_error_log.txt")
+        
+        # Ensure status file exists
+        with open(status_file_path, "w", encoding="utf-8") as f:
+            pass
+            
         command = [
             sys.executable, "-m", "demucs",
+            "--status-file", status_file_path,
             "-n", "htdemucs_6s",
             "-o", os.path.abspath(OUTPUT_DIR),
             "--mp3",
@@ -299,40 +350,64 @@ def run_demucs(filepath: str, file_id: str):
             "-j", "2",
             os.path.abspath(filepath)
         ]
-        
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True, encoding='utf-8', errors='replace')
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = 0x08000000
+            
+        process = subprocess.Popen(command, **kwargs)
         
         buf = ""
         logs = []
-        while True:
-            char = process.stdout.read(1)
-            if not char:
-                break
-            if char == '\r' or char == '\n':
-                if buf.strip():
-                    logs.append(buf.strip())
-                if "%|" in buf:
-                    # Parse percentage
-                    pct_match = re.search(r'(\d{1,3})%\|', buf)
-                    if pct_match:
-                        separation_status[file_id]["progress"] = int(pct_match.group(1))
+        with open(status_file_path, "r", encoding="utf-8", errors="replace") as f:
+            while process.poll() is None:
+                char = f.read(1)
+                if not char:
+                    time.sleep(0.1)
+                    continue
+                if char == '\r' or char == '\n':
+                    if buf.strip():
+                        logs.append(buf.strip())
+                    if "%|" in buf:
+                        # Parse percentage
+                        pct_match = re.search(r'(\d{1,3})%\|', buf)
+                        if pct_match:
+                            separation_status[file_id]["progress"] = int(pct_match.group(1))
+                        
+                        # Parse ETA
+                        eta_match = re.search(r'<([^,\]]+)', buf)
+                        if eta_match:
+                            separation_status[file_id]["eta"] = eta_match.group(1)
+                    buf = ""
+                else:
+                    buf += char
+            
+            # Process remaining output after process exits
+            while True:
+                char = f.read(1)
+                if not char:
+                    break
+                if char == '\r' or char == '\n':
+                    if buf.strip():
+                        logs.append(buf.strip())
+                    if "%|" in buf:
+                        pct_match = re.search(r'(\d{1,3})%\|', buf)
+                        if pct_match:
+                            separation_status[file_id]["progress"] = int(pct_match.group(1))
+                    buf = ""
+                else:
+                    buf += char
                     
-                    # Parse ETA
-                    eta_match = re.search(r'<([^,\]]+)', buf)
-                    if eta_match:
-                        separation_status[file_id]["eta"] = eta_match.group(1)
-                buf = ""
-            else:
-                buf += char
-                
-        process.wait()
+        try:
+            os.remove(status_file_path)
+        except:
+            pass
         
         if process.returncode == 0:
             separation_status[file_id]["status"] = "done"
             separation_status[file_id]["progress"] = 100
             separation_status[file_id]["eta"] = "00:00"
         else:
-            with open("error_log.txt", "w", encoding="utf-8") as f:
+            with open(error_log_path, "w", encoding="utf-8") as f:
                 f.write(f"Demucs failed with returncode: {process.returncode}\n")
                 f.write("Logs:\n")
                 f.write("\n".join(logs))
@@ -343,9 +418,13 @@ def run_demucs(filepath: str, file_id: str):
             separation_status[file_id]["status"] = "error"
     except Exception as e:
         import traceback
-        with open("error_log.txt", "w", encoding="utf-8") as f:
-            f.write(f"Exception: {str(e)}\n")
-            f.write(traceback.format_exc())
+        try:
+            error_log_path = os.path.join(os.path.abspath(UPLOAD_DIR), f"{file_id}_error_log.txt")
+            with open(error_log_path, "w", encoding="utf-8") as f:
+                f.write(f"Exception: {str(e)}\n")
+                f.write(traceback.format_exc())
+        except:
+            pass
         traceback.print_exc()
         print("Exception in run_demucs:", str(e))
         separation_status[file_id] = {"status": "error", "progress": 0, "eta": ""}
@@ -429,7 +508,7 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
     if not os.path.exists(stem_dir):
         return JSONResponse(status_code=404, content={"message": "Stems not found"})
         
-    export_dir = "exports"
+    export_dir = os.path.join(app_data, "exports")
     os.makedirs(export_dir, exist_ok=True)
     out_filename = f"{filename_no_ext}_mix.mp3"
     out_filepath = os.path.join(export_dir, out_filename)
@@ -478,7 +557,7 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
 
 @app.get("/download_export/{filename}")
 async def download_export(filename: str):
-    filepath = os.path.join("exports", filename)
+    filepath = os.path.join(app_data, "exports", filename)
     if not os.path.exists(filepath):
         return JSONResponse(status_code=404, content={"message": "File not found"})
     return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
@@ -490,7 +569,7 @@ tab_status = {}
 def run_tab_generator(filepath: str, file_id: str):
     tab_status[file_id] = {"status": "processing", "progress": 10}
     try:
-        tab_dir = "tabs"
+        tab_dir = os.path.join(app_data, "tabs")
         os.makedirs(tab_dir, exist_ok=True)
         out_filename = f"{file_id}_tab.txt"
         out_filepath = os.path.join(tab_dir, out_filename)
@@ -522,7 +601,7 @@ async def get_status_tab(file_id: str):
 
 @app.get("/download_tab/{filename}")
 async def download_tab(filename: str):
-    filepath = os.path.join("tabs", filename)
+    filepath = os.path.join(app_data, "tabs", filename)
     if not os.path.exists(filepath):
         return JSONResponse(status_code=404, content={"message": "File not found"})
     return FileResponse(filepath, media_type="text/plain", filename=filename)
@@ -534,7 +613,7 @@ async def download_tab(filename: str):
 # ============================================
 import yt_dlp
 
-YT2MP3_DIR = "yt2mp3_downloads"
+YT2MP3_DIR = os.path.join(app_data, "yt2mp3_downloads")
 os.makedirs(YT2MP3_DIR, exist_ok=True)
 
 yt2mp3_status = {}
@@ -740,9 +819,11 @@ if __name__ == "__main__":
         # Prevent uvicorn 'isatty' error in noconsole mode
         if sys.stdout is None or sys.stderr is None:
             class DummyStream:
+                encoding = 'utf-8'
                 def write(self, data): pass
                 def flush(self): pass
                 def isatty(self): return False
+                def fileno(self): return -1
             sys.stdout = DummyStream()
             sys.stderr = DummyStream()
             

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "07B3-0DFA-F2C5-94E8-0A52-CC37-A662-A8AE",
+    "license_type": "1y",
+    "customer_name": "Budi Juice",
+    "issued_date": "2026-06-29T04:09:13.967059",
+    "expiry_date": "2027-06-29T04:09:13.967059",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "FqbvnYS3pxvOchWuxV1OyMXTqlvqfOs96Df0Wp3pLnXYIIoLhQQa3Y3+I3XwQsNgw4Nz/xkuBgwkcM+9/a2A8knBkSlt35eLknu0nzXidGF/yfm0etIIrPmRXmbag/FtWiMh3TSRLIWdJyJuWgrPtnQJb4rrdnmWg5oxAjD3kGnsHG26oMrpAQEhC8RlE8QAHaQDTDQ3hUpnhJ7kBLcqADUsXXpGz25cl5yIIct70N/HNPXf1xID1/8/EHF3fHSsCO34V3ijo9TXRfn/VifvjGebfZjr5sJP52FF2MJcsvR/9+3MygwItSoLbaoexa+RdBGBRByJ/yZKHS7h9cbL2Q=="
+}

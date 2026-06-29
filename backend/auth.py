@@ -36,7 +36,11 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-    except jwt.PyJWTError:
+    except Exception as e:
+        import traceback
+        with open("error_log.txt", "a") as f:
+            f.write(f"JWT Decode error: {str(e)}\nToken: {token}\n")
+            f.write(traceback.format_exc() + "\n")
         raise credentials_exception
         
     db = get_db()
