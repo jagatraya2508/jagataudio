@@ -38,8 +38,8 @@ if getattr(sys, 'frozen', False):
         os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
 
 import shutil
-import subprocess
-import uuid
+import mimetypes
+import logging
 import tempfile
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 from database import get_db
@@ -680,6 +680,25 @@ def run_yt2mp3_download(url: str, job_id: str):
         print(f"YT2MP3 Error: {e}")
         yt2mp3_status[job_id]["status"] = "error"
         yt2mp3_status[job_id]["error"] = "Gagal mengunduh audio"
+
+from tab_scraper import search_tab_data
+
+class TabSearchRequest(BaseModel):
+    query: str
+
+@app.post("/tabs/search_online")
+async def search_tab_online(request: TabSearchRequest):
+    if not request.query:
+        raise HTTPException(status_code=400, detail="Query tidak boleh kosong")
+        
+    try:
+        result = search_tab_data(request.query)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class SearchRequest(BaseModel):
     query: str

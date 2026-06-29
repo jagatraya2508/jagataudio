@@ -25,44 +25,63 @@ def generate_tab_from_audio(audio_path, output_txt_path):
         
         notes.sort(key=lambda x: x[0])
         
-        tab_lines = {i: [] for i in range(6)}
-        current_time = 0.0
-        step_size = 0.15 # roughly 16th notes
+        if len(notes) == 0:
+            with open(output_txt_path, 'w') as f:
+                f.write("=== JAGAT AUDIO - AUTO GENERATED TAB ===\n")
+                f.write("Peringatan: Ini adalah hasil transkripsi AI (Eksperimental).\n\n")
+                f.write("Tidak ada nada yang terdeteksi.\n")
+            return output_txt_path
         
+        # Group notes by time buckets (e.g. 100ms)
+        step_size = 0.10
+        buckets = {}
         for time, pitch in notes:
-            # Add padding dashes if there's a gap
-            while current_time < time - step_size:
+            bucket_idx = int(time / step_size)
+            if bucket_idx not in buckets:
+                buckets[bucket_idx] = []
+            buckets[bucket_idx].append(pitch)
+            
+        max_bucket = max(buckets.keys())
+        tab_lines = {i: [] for i in range(6)}
+        
+        for b in range(max_bucket + 1):
+            if b not in buckets:
                 for i in range(6):
                     tab_lines[i].append('-')
-                current_time += step_size
+                continue
                 
-            # Find best string (lowest fret >= 0)
-            best_string = -1
-            best_fret = 999
-            for i, s_pitch in enumerate(strings):
-                fret = pitch - s_pitch
-                if 0 <= fret < best_fret and fret <= 22:
-                    best_fret = fret
-                    best_string = i
-                    
-            if best_string != -1:
-                # To align correctly, make all appends same length
-                fret_str = str(best_fret)
-                pad_len = len(fret_str)
-                for i in range(6):
-                    if i == best_string:
-                        tab_lines[i].append(fret_str)
-                    else:
-                        tab_lines[i].append('-' * pad_len)
-            current_time += step_size
+            bucket_notes = buckets[b]
+            string_frets = {i: '-' for i in range(6)}
             
+            # Sort notes highest to lowest to map to thinnest strings first
+            bucket_notes.sort(reverse=True)
+            
+            for pitch in bucket_notes:
+                best_string = -1
+                best_fret = 999
+                for i, s_pitch in enumerate(strings):
+                    if string_frets[i] == '-': # String not used in this chord yet
+                        fret = pitch - s_pitch
+                        if 0 <= fret < best_fret and fret <= 24:
+                            best_fret = fret
+                            best_string = i
+                            
+                if best_string != -1:
+                    string_frets[best_string] = str(best_fret)
+                    
+            # Find max width of frets in this chord to align
+            max_len = max([len(f) for f in string_frets.values()])
+            
+            for i in range(6):
+                f_str = string_frets[i]
+                if f_str == '-':
+                    tab_lines[i].append('-' * max_len)
+                else:
+                    tab_lines[i].append(f_str.ljust(max_len, '-'))
+                    
         with open(output_txt_path, 'w') as f:
             f.write("=== JAGAT AUDIO - AUTO GENERATED TAB ===\n")
             f.write("Peringatan: Ini adalah hasil transkripsi AI (Eksperimental).\n\n")
-            
-            if len(notes) == 0:
-                f.write("Tidak ada nada yang terdeteksi.\n")
-                return output_txt_path
                 
             chunk_size = 60
             total_len = len(tab_lines[0])

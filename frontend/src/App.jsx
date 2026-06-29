@@ -42,7 +42,10 @@ function App() {
   const [eta, setEta] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [isGeneratingTab, setIsGeneratingTab] = useState(false);
-
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchingTab, setIsSearchingTab] = useState(false);
+  const [searchResult, setSearchResult] = useState(null);
   // Auth State
   const [token, setToken] = useState(localStorage.getItem('token') || null);
   const [username, setUsername] = useState(localStorage.getItem('username') || null);
@@ -485,6 +488,57 @@ function App() {
       setStatus('error');
       setProgressText('Gagal mengunggah file.');
     }
+  };
+  
+  const handleSearchOnlineTab = async () => {
+    if (!searchQuery.trim()) return;
+    setIsSearchingTab(true);
+    setSearchResult(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/tabs/search_online`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ query: searchQuery })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Gagal mencari tabulatur');
+      
+      setSearchResult(data);
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsSearchingTab(false);
+    }
+  };
+
+  const handleOpenSearchModal = () => {
+    if (file && file.name) {
+      // Remove extension and populate the search query
+      const defaultQuery = file.name.replace(/\.[^/.]+$/, "");
+      setSearchQuery(defaultQuery);
+    } else {
+      setSearchQuery('');
+    }
+    setSearchResult(null);
+    setShowSearchModal(true);
+  };
+
+  const handleDownloadOnlineTab = () => {
+    if (!searchResult || !searchResult.content) return;
+    const blob = new Blob([searchResult.content], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Tab_Online_${searchQuery}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setShowSearchModal(false);
+    setSearchResult(null);
   };
 
   const generateMasterTab = async () => {
@@ -1385,6 +1439,14 @@ function App() {
                 {isGeneratingTab ? <Loader2 size={18} className="spinner" /> : <FileText size={18} />}
                 {isGeneratingTab ? ' Memproses...' : ' Buat Tabulatur Langsung'}
               </button>
+
+              <button 
+                className="process-btn" 
+                style={{ backgroundColor: '#ff9f1c', marginLeft: '10px' }} 
+                onClick={handleOpenSearchModal}
+              >
+                <Search size={18} /> Cari Tab Online
+              </button>
             </div>
           </div>
         )}
@@ -1737,6 +1799,83 @@ function App() {
             )}
           </div>
         ) : null}
+
+        {showSearchModal && (
+          <div className="modal-overlay">
+            <div className="modal-content glass-panel" style={{ maxWidth: '500px', width: '100%' }}>
+              <div className="modal-header">
+                <h2>Cari Tabulatur Online</h2>
+                <button className="close-btn" onClick={() => setShowSearchModal(false)}><X size={24} /></button>
+              </div>
+              
+              <div style={{ padding: '20px' }}>
+                {!searchResult ? (
+                  <>
+                    <p style={{ color: 'var(--text-secondary)', marginBottom: '15px' }}>
+                      Sistem akan mencari tabulatur/chord asli buatan manusia dari internet.
+                    </p>
+                    <input
+                      type="text"
+                      placeholder="Contoh: Peterpan Mungkin Nanti"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="auth-input"
+                      style={{ 
+                        width: '100%', 
+                        marginBottom: '20px', 
+                        padding: '15px 20px', 
+                        fontSize: '1.1rem',
+                        borderRadius: '10px'
+                      }}
+                    />
+                    
+                    <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                      <button 
+                        className="cancel-btn"
+                        onClick={() => setShowSearchModal(false)}
+                      >
+                        Batal
+                      </button>
+                      <button 
+                        className="process-btn"
+                        style={{ backgroundColor: '#ff9f1c', flex: 1, padding: '10px' }}
+                        onClick={handleSearchOnlineTab}
+                        disabled={!searchQuery.trim() || isSearchingTab}
+                      >
+                        {isSearchingTab ? <><Loader2 size={18} className="spinner" /> Mencari...</> : <><Search size={18} /> Cari Sekarang</>}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="search-result-container" style={{ textAlign: 'left' }}>
+                    <div style={{ marginBottom: '15px', padding: '15px', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px' }}>
+                      <h4 style={{ color: '#2ec4b6', marginBottom: '10px' }}>Berhasil Ditemukan!</h4>
+                      <p><strong>Sumber:</strong> <a href={searchResult.source} target="_blank" rel="noreferrer" style={{ color: '#3a86ff' }}>Ultimate-Guitar</a></p>
+                      <p><strong>Tipe:</strong> {searchResult.type}</p>
+                      <p><strong>Rating:</strong> {searchResult.rating} / 5</p>
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <button 
+                        className="cancel-btn"
+                        onClick={() => setSearchResult(null)}
+                      >
+                        Kembali
+                      </button>
+                      <button 
+                        className="process-btn"
+                        style={{ backgroundColor: '#2ec4b6', flex: 1 }}
+                        onClick={handleDownloadOnlineTab}
+                      >
+                        <Download size={18} /> Unduh File Txt
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
