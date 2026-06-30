@@ -41,7 +41,7 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [eta, setEta] = useState('');
   const [isExporting, setIsExporting] = useState(false);
-  const [isGeneratingTab, setIsGeneratingTab] = useState(false);
+
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchingTab, setIsSearchingTab] = useState(false);
@@ -541,82 +541,6 @@ function App() {
     setSearchResult(null);
   };
 
-  const generateMasterTab = async () => {
-    if (!file) return;
-    
-    if (originalAudioRef.current) {
-      originalAudioRef.current.pause();
-    }
-    setOriginalPlaying(false);
-    
-    setStatus('generating_tab');
-    setProgressText('AI sedang mendengarkan nada...');
-    setProgress(0);
-    setEta('Memproses...');
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    try {
-      const uploadRes = await fetch(`${API_BASE_URL}/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData
-      });
-      const uploadData = await uploadRes.json();
-      const currentFileId = uploadData.file_id;
-      setFileId(currentFileId);
-      
-      await fetch(`${API_BASE_URL}/generate_tab_master/${currentFileId}`, { 
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      const pollInterval = setInterval(async () => {
-        try {
-          const res = await fetch(`${API_BASE_URL}/status_tab/${currentFileId}`);
-          const data = await res.json();
-          
-          if (data.progress !== undefined) {
-             setProgress(prev => {
-                if (data.progress === 100) return 100;
-                if (prev < data.progress) return data.progress;
-                const next = prev + 1;
-                return next > 95 ? 95 : next;
-             });
-          }
-          
-          if (data.status === 'done') {
-            clearInterval(pollInterval);
-            setProgress(100);
-            setProgressText('Selesai! Mengunduh tabulatur...');
-            
-            setTimeout(() => {
-                const a = document.createElement('a');
-                a.href = `${API_BASE_URL}${data.download_url}`;
-                a.download = `${file.name}_tab.txt`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                
-                setStatus('selected');
-            }, 1500);
-          } else if (data.status === 'error') {
-            clearInterval(pollInterval);
-            setStatus('error');
-            setProgressText('Terjadi kesalahan saat membuat tabulatur.');
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      }, 1000);
-      
-    } catch (err) {
-      console.error(err);
-      setStatus('error');
-      setProgressText('Gagal membuat tabulatur.');
-    }
-  };
 
   const formatTime = (secs) => {
     if (isNaN(secs)) return '00:00';
@@ -1430,15 +1354,7 @@ function App() {
                 <Sparkles size={18} /> Mulai Pemisahan AI
               </button>
               
-              <button 
-                className="process-btn" 
-                style={{ backgroundColor: '#2ec4b6' }} 
-                onClick={generateMasterTab}
-                disabled={isGeneratingTab}
-              >
-                {isGeneratingTab ? <Loader2 size={18} className="spinner" /> : <FileText size={18} />}
-                {isGeneratingTab ? ' Memproses...' : ' Buat Tabulatur Langsung'}
-              </button>
+
 
               <button 
                 className="process-btn" 
@@ -1451,7 +1367,7 @@ function App() {
           </div>
         )}
 
-        {(status === 'uploading' || status === 'processing' || status === 'loading_audio' || status === 'generating_tab') && (
+        {(status === 'uploading' || status === 'processing' || status === 'loading_audio') && (
           <div className="loading-card glass-panel">
             <Loader2 size={48} className="spinner" />
             
@@ -1494,36 +1410,7 @@ function App() {
               </>
             )}
             
-            {status === 'generating_tab' && (
-              <>
-                <h3>Membuat Tabulatur Gitar</h3>
-                <p className="progress-text">{progressText}</p>
-                
-                <div className="progress-section">
-                  <div className="progress-info">
-                    <span className="progress-percent">{progress}% Selesai</span>
-                    <span className="progress-eta">{eta}</span>
-                  </div>
-                  <div className="progress-bar-container">
-                    <div 
-                      className="progress-bar-fill" 
-                      style={{ width: `${progress}%` }}
-                    ></div>
-                  </div>
-                  {progress >= 100 && (
-                    <div style={{ marginTop: '15px', color: '#ff9f1c', fontWeight: 'bold', textAlign: 'center', animation: 'pulse 1.5s infinite' }}>
-                      Mohon Tunggu Sampai Proses Selesai...
-                    </div>
-                  )}
-                </div>
 
-                <div className="processing-steps">
-                  <div className={`step ${progress >= 10 ? 'active' : ''}`}>1. Memuat File Audio</div>
-                  <div className={`step ${progress >= 40 ? 'active' : ''}`}>2. Mendeteksi Nada dengan AI (Basic-Pitch)</div>
-                  <div className={`step ${progress >= 95 ? 'active' : ''}`}>3. Menerjemahkan ke Tabulatur Teks</div>
-                </div>
-              </>
-            )}
 
             {status === 'loading_audio' && (
               <>

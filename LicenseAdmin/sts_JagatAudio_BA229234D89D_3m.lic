@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "BA22-9234-D89D-38B1-272F-CD02-4C56-B085",
+    "license_type": "3m",
+    "customer_name": "sts",
+    "issued_date": "2026-06-30T06:35:12.690788",
+    "expiry_date": "2026-09-28T06:35:12.690788",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "EwO2N7Ym2GE+B63O/wyUhqAwF0HlacepxAoOXTCkf+n7MZZyJQsVpWvpp0SbFGBHCTlnsyjhWR3pTAugCALqGWU7g6RUymrTxoQdRxUM+kW4NSgN2vBmDsyx50T7bTrmOZtL/x1LzX7bI7XiEFVaDEfgyRpGi0oZa+AqlZ/GlZT1YSTcYJ+8dHai/1pVJoy6mHHUZFmaTpvIIjI3W8hi+LWxz1+s6SVfBQVfKHJSubM9PvA4nQoFDar8qgUm6di4eqqsJ6/jTW0VahUY7Ek+2uW7y5WVvB3zs3zf7MdAWx/iwBoe4XS/b8RW+xh3zJ34MGMqfou5PnGKoYvHdrVoNg=="
+}

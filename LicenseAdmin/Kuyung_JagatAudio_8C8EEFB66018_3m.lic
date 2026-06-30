@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "8C8E-EFB6-6018-787E-D8B2-F30C-3860-9691",
+    "license_type": "3m",
+    "customer_name": "Kuyung",
+    "issued_date": "2026-06-29T14:36:38.292276",
+    "expiry_date": "2026-09-27T14:36:38.292276",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "k2I6y5xXamFgjH5LjSIx+iq+hABJhyWcxSsibLV0cIZTlZbF6JOuWmGfbmsih13HBjxwNFHX9PBFID5DibhwmrC1JDba3cbw11oN9/Cl7UCg/87mkGZEK5jl3ktnmb4jodn4FCyYAzwKneNvCeJKtGB74sjaDeAX9CLokKMq2AKuwQKvfKYYL8LsCSO1S8dfRgtRSVVN8vGkJsrLcApYvdvVBj/OPDxPVb4FZCKN8D0KyVE+ty2y7dfst6xi8NpbcBhRYoRKS3yyEKjrafkMLZB8/x+31foT76/a0LaO/+rsAiKblV93uNqXbxbc2VfMyr+f6DvReR8/wUP96wh7MQ=="
+}
