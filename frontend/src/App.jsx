@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, MicOff, KeyRound, Copy, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, MicOff, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = `http://${window.location.hostname}:8000`;
@@ -32,6 +32,12 @@ function App() {
   const [tempo, setTempo] = useState(1); // 0.5 to 2.0 playback rate
   const [stemCurrentTime, setStemCurrentTime] = useState(0);
   const [stemDuration, setStemDuration] = useState(0);
+
+  // Audio Enhancer / Mastering state
+  const [eqLow, setEqLow] = useState(0);   // -12 to 12 dB
+  const [eqMid, setEqMid] = useState(0);   // -12 to 12 dB
+  const [eqHigh, setEqHigh] = useState(0);  // -12 to 12 dB
+  const [compressorEnabled, setCompressorEnabled] = useState(false);
   
   // Original audio and progress states
   const [originalUrl, setOriginalUrl] = useState(null);
@@ -110,6 +116,8 @@ function App() {
 
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
+  const masterEqRef = useRef(null);
+  const masterCompressorRef = useRef(null);
   const ytAnimFrameRef = useRef(null);
   const originalAudioRef = useRef(null);
 
@@ -117,6 +125,8 @@ function App() {
     return () => {
       Object.values(playersRef.current).forEach(p => p.dispose());
       Object.values(volumeNodesRef.current).forEach(v => v.dispose());
+      if (masterEqRef.current) masterEqRef.current.dispose();
+      if (masterCompressorRef.current) masterCompressorRef.current.dispose();
     };
   }, []);
 
@@ -454,6 +464,12 @@ function App() {
   const startSeparation = async () => {
     if (!file) return;
     
+    try {
+      await Tone.start();
+    } catch (e) {
+      console.warn('Tone.start failed', e);
+    }
+    
     if (originalAudioRef.current) {
       originalAudioRef.current.pause();
     }
@@ -552,6 +568,18 @@ function App() {
   const loadAudioStems = async (id) => {
     await Tone.start();
     
+    // Dispose previous master nodes if any
+    if (masterEqRef.current) { masterEqRef.current.dispose(); masterEqRef.current = null; }
+    if (masterCompressorRef.current) { masterCompressorRef.current.dispose(); masterCompressorRef.current = null; }
+
+    // Create master EQ and Compressor chain
+    const masterEq = new Tone.EQ3(0, 0, 0);
+    const masterCompressor = new Tone.Compressor({ threshold: -24, ratio: 4, attack: 0.003, release: 0.25 });
+    masterCompressor.wet.value = 0; // off by default
+    masterEq.chain(masterCompressor, Tone.Destination);
+    masterEqRef.current = masterEq;
+    masterCompressorRef.current = masterCompressor;
+
     const newPlayers = {};
     const newVolumes = {};
     const initVols = {};
@@ -559,16 +587,14 @@ function App() {
     
     try {
       // Create a player for each instrument
-      const loadPromises = INSTRUMENTS.map(inst => {
-        return new Promise((resolve, reject) => {
+      INSTRUMENTS.forEach(inst => {
           const url = `${API_BASE_URL}/audio/${id}/${inst.id}.mp3`;
           
-          const volNode = new Tone.Volume(0).toDestination();
+          // Route through master EQ instead of directly to Destination
+          const volNode = new Tone.Volume(0).connect(masterEq);
           
           const player = new Tone.GrainPlayer({
-            url: url,
-            onload: () => resolve(),
-            onerror: reject
+            url: url
           });
           
           player.connect(volNode);
@@ -578,10 +604,9 @@ function App() {
           newVolumes[inst.id] = volNode;
           initVols[inst.id] = 0; // 0 dB
           initMutes[inst.id] = false;
-        });
       });
       
-      await Promise.all(loadPromises);
+      await Tone.loaded();
       
       playersRef.current = newPlayers;
       volumeNodesRef.current = newVolumes;
@@ -590,6 +615,12 @@ function App() {
       setVolumes(initVols);
       setMutes(initMutes);
       
+      // Reset EQ/Compressor states
+      setEqLow(0);
+      setEqMid(0);
+      setEqHigh(0);
+      setCompressorEnabled(false);
+
       if (newPlayers[INSTRUMENTS[0].id]?.buffer) {
          setStemDuration(newPlayers[INSTRUMENTS[0].id].buffer.duration);
       }
@@ -659,6 +690,29 @@ function App() {
     Tone.Transport.seconds = newTime;
   };
 
+  // Audio Enhancer handlers
+  const handleEqLowChange = (val) => {
+    setEqLow(val);
+    if (masterEqRef.current) masterEqRef.current.low.value = val;
+  };
+  const handleEqMidChange = (val) => {
+    setEqMid(val);
+    if (masterEqRef.current) masterEqRef.current.mid.value = val;
+  };
+  const handleEqHighChange = (val) => {
+    setEqHigh(val);
+    if (masterEqRef.current) masterEqRef.current.high.value = val;
+  };
+  const handleCompressorToggle = () => {
+    setCompressorEnabled(prev => {
+      const next = !prev;
+      if (masterCompressorRef.current) {
+        masterCompressorRef.current.wet.value = next ? 1 : 0;
+      }
+      return next;
+    });
+  };
+
   const exportMix = async () => {
     if (!fileId) return;
     setIsExporting(true);
@@ -674,7 +728,11 @@ function App() {
           volumes: volumes,
           mutes: mutes,
           pitch: pitch,
-          tempo: tempo
+          tempo: tempo,
+          eq_low: eqLow,
+          eq_mid: eqMid,
+          eq_high: eqHigh,
+          compressor_enabled: compressorEnabled
         })
       });
       
@@ -1504,6 +1562,81 @@ function App() {
                 </div>
               ))}
             </div>
+
+            {/* Audio Enhancer / Mastering Panel */}
+            <div className="audio-enhancer glass-panel" style={{ marginTop: '1.5rem', padding: '1.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.2rem' }}>
+                <Sliders size={22} color="#8338ec" />
+                <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Audio Enhancer</h3>
+              </div>
+
+              <div className="enhancer-controls" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                {/* EQ Sliders */}
+                <div style={{ display: 'flex', gap: '1.5rem', flex: '1 1 auto' }}>
+                  {/* Bass */}
+                  <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Bass</label>
+                    <input 
+                      type="range" min="-12" max="12" step="1" 
+                      value={eqLow} 
+                      onChange={(e) => handleEqLowChange(parseFloat(e.target.value))} 
+                      className="accent-slider eq-slider"
+                      style={{ '--slider-color': '#2ec4b6' }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#2ec4b6', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqLow > 0 ? '+' : ''}{eqLow} dB</span>
+                  </div>
+                  {/* Mid */}
+                  <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Mid</label>
+                    <input 
+                      type="range" min="-12" max="12" step="1" 
+                      value={eqMid} 
+                      onChange={(e) => handleEqMidChange(parseFloat(e.target.value))} 
+                      className="accent-slider eq-slider"
+                      style={{ '--slider-color': '#ff9f1c' }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#ff9f1c', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqMid > 0 ? '+' : ''}{eqMid} dB</span>
+                  </div>
+                  {/* Treble */}
+                  <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Treble</label>
+                    <input 
+                      type="range" min="-12" max="12" step="1" 
+                      value={eqHigh} 
+                      onChange={(e) => handleEqHighChange(parseFloat(e.target.value))} 
+                      className="accent-slider eq-slider"
+                      style={{ '--slider-color': '#3a86ff' }}
+                    />
+                    <span style={{ fontSize: '0.8rem', color: '#3a86ff', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqHigh > 0 ? '+' : ''}{eqHigh} dB</span>
+                  </div>
+                </div>
+
+                {/* Compressor Toggle */}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Compressor</label>
+                  <button 
+                    onClick={handleCompressorToggle}
+                    style={{
+                      padding: '0.6rem 1.4rem',
+                      borderRadius: '10px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontWeight: 700,
+                      fontSize: '0.85rem',
+                      transition: 'all 0.3s ease',
+                      background: compressorEnabled 
+                        ? 'linear-gradient(135deg, #8338ec, #ff477e)' 
+                        : 'rgba(255,255,255,0.08)',
+                      color: compressorEnabled ? '#fff' : 'var(--text-secondary)',
+                      boxShadow: compressorEnabled ? '0 4px 15px rgba(131, 56, 236, 0.4)' : 'none'
+                    }}
+                  >
+                    {compressorEnabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
           </div>
         )}
           </>

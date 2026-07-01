@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "52D8-AAA5-7AF8-ECD2-EFE5-8037-C78C-0213",
+    "license_type": "3m",
+    "customer_name": "Aini",
+    "issued_date": "2026-07-01T03:46:44.663143",
+    "expiry_date": "2026-09-29T03:46:44.663143",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "EIdazQ17zgYPsJ/d7JCUH1F177wqE5uTlhkitdxVz8gqs2ztwZR1IZXwrKLxw8XYjuHm9Q7SXBmsZeBbF6mplWto/1tBNl0SKm3UFciuk5GULGNcntBfNSwqS/urr5FTKghqAy1O5wY5RTMaw7ZFlfbxJaKsEkJjbYXa+FtlLhdfvDHc9uRwuYhMda5vjiv4hNo1Btl9xOoeF/ViBaZiL4V/VOLTm4ahGi1ECpSZHZMLC2h6UGbvbijTD9e619aaVbbNr9xsa6Sbzc3uS/4+LpZhy+4uoDfGdgc2ZfTTxhDhnlUzcmWpDS0d66mL/1zoACn38er8fZV6rWEy9vAyLg=="
+}

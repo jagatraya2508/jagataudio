@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "03A4-F774-40A5-C5AD-7D3B-4B2B-BF1E-DE59",
+    "license_type": "3m",
+    "customer_name": "Mif",
+    "issued_date": "2026-06-30T17:20:16.404502",
+    "expiry_date": "2026-09-28T17:20:16.404502",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "dnnZpSKZf1oOphjCXSkpWY9Z5QypHDsQPS7h8ATSycyviBmnohW7gtZGkFUh/jln1KcT3wvSjUqyM4fQt09NKyRF9UXmRMcLRtlbNXuyRWyBpSEYmLYCaAcNNx9uFieNtnS7g7oMIXQqmbC/R2K/P3MKBbLpbjeLfUNdkjenZYQu+ET4vLJEk1MoM0yMcOaY8GxiFbvVt24y0koEO1OQ3+QYvOESSo70CPgeu8xsHv+1YfeUwQdS1+tyMAgDKV61x48tJjaf30/0ZyXMkrvW8xVRju9EeKMjj7bIL+9GL6WOxBnF2m4loU9YzONlLyoWFpEJ+GWm11h/pcKZhG39DA=="
+}

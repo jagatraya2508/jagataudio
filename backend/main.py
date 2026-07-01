@@ -7,6 +7,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import os
 import sys
 import multiprocessing
+import uuid
+import subprocess
 
 if sys.platform.startswith('win'):
     multiprocessing.freeze_support()
@@ -332,6 +334,7 @@ def run_demucs(filepath: str, file_id: str):
         import traceback
         import time
         import os
+        import subprocess
         
         status_file_path = os.path.join(os.path.abspath(UPLOAD_DIR), f"{file_id}_demucs_status.txt")
         error_log_path = os.path.join(os.path.abspath(UPLOAD_DIR), f"{file_id}_error_log.txt")
@@ -340,8 +343,12 @@ def run_demucs(filepath: str, file_id: str):
         with open(status_file_path, "w", encoding="utf-8") as f:
             pass
             
-        command = [
-            sys.executable, "-m", "demucs",
+        command = [sys.executable]
+        if not getattr(sys, 'frozen', False):
+            command.append(os.path.abspath(__file__))
+            
+        command.extend([
+            "-m", "demucs",
             "--status-file", status_file_path,
             "-n", "htdemucs_6s",
             "-o", os.path.abspath(OUTPUT_DIR),
@@ -349,7 +356,7 @@ def run_demucs(filepath: str, file_id: str):
             "--mp3-preset", "7",
             "-j", "2",
             os.path.abspath(filepath)
-        ]
+        ])
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000
@@ -432,7 +439,7 @@ def run_demucs(filepath: str, file_id: str):
 @app.post("/separate/{file_id}")
 async def separate_audio(file_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     # Find file
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id) and not f.endswith('.txt')]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
         
@@ -452,7 +459,7 @@ async def get_status(file_id: str):
 async def get_stems(file_id: str, current_user: dict = Depends(get_current_user)):
     # Demucs outputs to OUTPUT_DIR/htdemucs_6s/{filename_without_ext}/
     # We need to find the dir
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id) and not f.endswith('.txt')]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
         
@@ -471,7 +478,7 @@ async def get_stems(file_id: str, current_user: dict = Depends(get_current_user)
 async def get_audio(file_id: str, stem_name: str):
     # Note: Audio is served to frontend audio player, which might not easily send headers in <audio src>.
     # We leave this unprotected or protect via query token if needed.
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id) and not f.endswith('.txt')]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
         
@@ -493,10 +500,14 @@ class MixParams(BaseModel):
     mutes: Dict[str, bool]
     pitch: float
     tempo: float
+    eq_low: float = 0.0    # -12 to 12 dB
+    eq_mid: float = 0.0    # -12 to 12 dB
+    eq_high: float = 0.0   # -12 to 12 dB
+    compressor_enabled: bool = False
 
 @app.post("/export/{file_id}")
 async def export_mix(file_id: str, params: MixParams, current_user: dict = Depends(get_current_user)):
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id) and not f.endswith('.txt')]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
         
@@ -535,15 +546,48 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
     mix_inputs = "".join([f"[a{i}]" for i in range(input_idx)])
     filters.append(f"{mix_inputs}amix=inputs={input_idx}:normalize=0[mix]")
     
+    # Build the post-mix processing chain
+    current_label = "mix"
+    label_counter = 0
+    
+    # Apply pitch and tempo if changed
     pitch_semitones = params.pitch
     tempo = params.tempo
     
     if pitch_semitones != 0 or tempo != 1.0:
         pitch_factor = 2 ** (pitch_semitones / 12.0)
-        filters.append(f"[mix]rubberband=pitch={pitch_factor}:tempo={tempo}[out]")
-        map_out = "[out]"
-    else:
-        map_out = "[mix]"
+        next_label = f"pt{label_counter}"
+        filters.append(f"[{current_label}]rubberband=pitch={pitch_factor}:tempo={tempo}[{next_label}]")
+        current_label = next_label
+        label_counter += 1
+    
+    # Apply EQ (Bass, Mid, Treble) if any value is non-zero
+    eq_low = params.eq_low
+    eq_mid = params.eq_mid
+    eq_high = params.eq_high
+    
+    if eq_low != 0 or eq_mid != 0 or eq_high != 0:
+        eq_parts = []
+        if eq_low != 0:
+            eq_parts.append(f"bass=g={eq_low}")
+        if eq_mid != 0:
+            eq_parts.append(f"equalizer=f=1000:width_type=q:width=1:g={eq_mid}")
+        if eq_high != 0:
+            eq_parts.append(f"treble=g={eq_high}")
+        eq_chain = ",".join(eq_parts)
+        next_label = f"eq{label_counter}"
+        filters.append(f"[{current_label}]{eq_chain}[{next_label}]")
+        current_label = next_label
+        label_counter += 1
+    
+    # Apply Compressor if enabled
+    if params.compressor_enabled:
+        next_label = f"comp{label_counter}"
+        filters.append(f"[{current_label}]acompressor=threshold=-24dB:ratio=4:attack=3:release=250[{next_label}]")
+        current_label = next_label
+        label_counter += 1
+    
+    map_out = f"[{current_label}]"
         
     filter_complex = "; ".join(filters)
     command.extend(["-filter_complex", filter_complex, "-map", map_out, "-c:a", "libmp3lame", "-b:a", "320k", out_filepath])
@@ -584,7 +628,7 @@ def run_tab_generator(filepath: str, file_id: str):
 
 @app.post("/generate_tab_master/{file_id}")
 async def generate_tab_master(file_id: str, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id) and not f.endswith('.txt')]
     if not files:
         return JSONResponse(status_code=404, content={"message": "File not found"})
         
