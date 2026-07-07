@@ -7,7 +7,7 @@ from database import get_db
 
 SECRET_KEY = "jagataudio_super_secret_key"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 days
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -36,6 +36,14 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sesi login habis, silakan login kembali",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError:
+        raise credentials_exception
     except Exception as e:
         import traceback
         with open("error_log.txt", "a") as f:
@@ -45,7 +53,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT id, username, is_admin FROM users WHERE username = ?", (username,))
+    cursor.execute(
+        "SELECT id, username, is_admin FROM users WHERE lower(username) = lower(?)",
+        (username,),
+    )
     user = cursor.fetchone()
     db.close()
     

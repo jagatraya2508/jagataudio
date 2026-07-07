@@ -39,7 +39,7 @@ hidden_imports = [
     'starlette.routing', 'starlette.responses', 'pydantic',
     'passlib', 'passlib.handlers', 'passlib.handlers.bcrypt', 'bcrypt', 'jwt',
     'cryptography', 'multipart', 'python_multipart', 'sqlite3',
-    'auth', 'database', 'tab_generator', 'license_manager',
+    'auth', 'database', 'tab_generator', 'license_manager', 'lyrics_fetcher', 'version',
     # ML Libraries
     'basic_pitch', 'basic_pitch.inference', 'basic_pitch.models',
     'mido', 'demucs', 'demucs.api', 'demucs.apply', 'demucs.pretrained', 'demucs.htdemucs',

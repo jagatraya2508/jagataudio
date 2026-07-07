@@ -9,6 +9,8 @@ import sys
 import multiprocessing
 import uuid
 import subprocess
+import re
+from urllib.parse import quote
 
 if sys.platform.startswith('win'):
     multiprocessing.freeze_support()
@@ -43,10 +45,14 @@ import shutil
 import mimetypes
 import logging
 import tempfile
+import json
+from datetime import datetime, timezone
+from typing import Dict, Optional
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 from database import get_db
 from pydantic import BaseModel
 from license_manager import get_hardware_id, validate_license, install_license, get_license_info
+from version import APP_VERSION
 
 app = FastAPI()
 
@@ -67,6 +73,8 @@ LICENSE_FREE_PATHS = {
     "/license/status",
     "/license/hardware-id",
     "/license/activate",
+    "/login",
+    "/register",
     "/docs",
     "/openapi.json",
 }
@@ -109,12 +117,121 @@ else:
 
 UPLOAD_DIR = os.path.join(app_data, "uploads")
 OUTPUT_DIR = os.path.join(app_data, "separated")
+LYRICS_CACHE_DIR = os.path.join(app_data, "lyrics_cache")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(LYRICS_CACHE_DIR, exist_ok=True)
 
 # Keep track of status
 separation_status = {}
+
+PROJECT_META_SUFFIX = "_project.json"
+STEM_NAMES = ["vocals.mp3", "drums.mp3", "bass.mp3", "guitar.mp3", "piano.mp3", "other.mp3"]
+
+
+def _project_meta_path(file_id: str) -> str:
+    return os.path.join(UPLOAD_DIR, f"{file_id}{PROJECT_META_SUFFIX}")
+
+
+def _read_project_meta(file_id: str) -> Optional[dict]:
+    path = _project_meta_path(file_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_project_meta(file_id: str, data: dict) -> None:
+    path = _project_meta_path(file_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _stems_dir_for_id(file_id: str) -> str:
+    return os.path.join(OUTPUT_DIR, "htdemucs_6s", file_id)
+
+
+def _stems_ready(file_id: str) -> bool:
+    stem_dir = _stems_dir_for_id(file_id)
+    if not os.path.isdir(stem_dir):
+        return False
+    return all(os.path.exists(os.path.join(stem_dir, name)) for name in STEM_NAMES)
+
+
+def _ensure_project_meta(file_id: str, original_name: Optional[str] = None) -> dict:
+    meta = _read_project_meta(file_id) or {}
+    meta.setdefault("file_id", file_id)
+    if original_name:
+        meta["original_name"] = original_name
+        meta.setdefault("display_name", os.path.splitext(original_name)[0])
+        meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    if _stems_ready(file_id):
+        meta["status"] = "ready"
+        if not meta.get("separated_at"):
+            meta["separated_at"] = datetime.fromtimestamp(
+                os.path.getmtime(_stems_dir_for_id(file_id)), tz=timezone.utc
+            ).isoformat()
+    _write_project_meta(file_id, meta)
+    return meta
+
+
+def _list_all_projects() -> list:
+    projects = []
+    seen = set()
+
+    for fname in os.listdir(UPLOAD_DIR):
+        if not fname.endswith(PROJECT_META_SUFFIX):
+            continue
+        file_id = fname[: -len(PROJECT_META_SUFFIX)]
+        if not _stems_ready(file_id):
+            continue
+        meta = _read_project_meta(file_id) or {"file_id": file_id}
+        meta["file_id"] = file_id
+        meta["status"] = "ready"
+        projects.append(meta)
+        seen.add(file_id)
+
+    htdemucs_root = os.path.join(OUTPUT_DIR, "htdemucs_6s")
+    if os.path.isdir(htdemucs_root):
+        for file_id in os.listdir(htdemucs_root):
+            if file_id in seen or not _stems_ready(file_id):
+                continue
+            upload_files = [
+                f for f in os.listdir(UPLOAD_DIR)
+                if f.startswith(file_id)
+                and not f.endswith(".txt")
+                and not f.endswith(PROJECT_META_SUFFIX)
+            ]
+            original_name = upload_files[0] if upload_files else f"{file_id}.mp3"
+            meta = _ensure_project_meta(file_id, original_name)
+            meta.setdefault("display_name", file_id)
+            projects.append(meta)
+
+    projects.sort(
+        key=lambda p: p.get("separated_at") or p.get("created_at") or "",
+        reverse=True,
+    )
+    return projects
+
+
+def _safe_export_basename(name: str) -> str:
+    cleaned = (name or "").strip()
+    if cleaned.lower().endswith(".mp3"):
+        cleaned = cleaned[:-4]
+    cleaned = re.sub(r'[<>:"/\\|?*]', "_", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return (cleaned[:100] if cleaned else "export")
+
+
+def _export_display_name(file_id: str, filename_no_ext: str) -> str:
+    meta = _read_project_meta(file_id) or {}
+    base = meta.get("display_name") or meta.get("original_name")
+    if base:
+        base = os.path.splitext(base)[0]
+    else:
+        base = filename_no_ext
+    return _safe_export_basename(base)
 
 # ============================================
 # LICENSE ENDPOINTS
@@ -123,7 +240,9 @@ separation_status = {}
 @app.get("/license/status")
 def license_status():
     """Get current license status and info"""
-    return get_license_info()
+    info = get_license_info()
+    info["app_version"] = APP_VERSION
+    return info
 
 @app.get("/license/hardware-id")
 def license_hardware_id():
@@ -204,21 +323,38 @@ def register(user: UserCreate):
 
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    username = form_data.username.strip()
+    password = form_data.password
+    if not username or not password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Username dan password wajib diisi",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT id, username, password_hash, is_admin FROM users WHERE username = ?", (form_data.username,))
+    cursor.execute(
+        "SELECT id, username, password_hash, is_admin FROM users WHERE lower(username) = lower(?)",
+        (username,),
+    )
     user = cursor.fetchone()
     db.close()
     
-    if not user or not verify_password(form_data.password, user['password_hash']):
+    if not user or not verify_password(password, user['password_hash']):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Username atau password salah",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
     access_token = create_access_token(data={"sub": user['username']})
-    return {"access_token": access_token, "token_type": "bearer", "is_admin": bool(user['is_admin'])}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "is_admin": bool(user['is_admin']),
+        "username": user['username'],
+    }
 
 @app.get("/me")
 def read_users_me(current_user: dict = Depends(get_current_user)):
@@ -323,8 +459,15 @@ async def upload_file(file: UploadFile = File(...), current_user: dict = Depends
     
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+
+    _ensure_project_meta(file_id, file.filename)
         
-    return {"file_id": file_id, "filename": file.filename, "filepath": filepath}
+    return {
+        "file_id": file_id,
+        "filename": file.filename,
+        "display_name": os.path.splitext(file.filename)[0],
+        "filepath": filepath,
+    }
 
 def run_demucs(filepath: str, file_id: str):
     try:
@@ -353,7 +496,7 @@ def run_demucs(filepath: str, file_id: str):
             "-n", "htdemucs_6s",
             "-o", os.path.abspath(OUTPUT_DIR),
             "--mp3",
-            "--mp3-preset", "7",
+            "--mp3-preset", "2",
             "-j", "2",
             os.path.abspath(filepath)
         ])
@@ -413,6 +556,10 @@ def run_demucs(filepath: str, file_id: str):
             separation_status[file_id]["status"] = "done"
             separation_status[file_id]["progress"] = 100
             separation_status[file_id]["eta"] = "00:00"
+            meta = _read_project_meta(file_id) or {"file_id": file_id}
+            meta["status"] = "ready"
+            meta["separated_at"] = datetime.now(timezone.utc).isoformat()
+            _write_project_meta(file_id, meta)
         else:
             with open(error_log_path, "w", encoding="utf-8") as f:
                 f.write(f"Demucs failed with returncode: {process.returncode}\n")
@@ -474,6 +621,100 @@ async def get_stems(file_id: str, current_user: dict = Depends(get_current_user)
     stems = os.listdir(stem_dir)
     return {"stems": stems, "file_id": file_id}
 
+
+class ProjectSettings(BaseModel):
+    volumes: Dict[str, float] = {}
+    mutes: Dict[str, bool] = {}
+    pitch: float = 0.0
+    tempo: float = 1.0
+    eq_low: float = 0.0
+    eq_mid: float = 0.0
+    eq_high: float = 0.0
+    compressor_enabled: bool = False
+    stem_lyrics_offset_ms: float = 0.0
+    stem_lyrics_speed_pct: float = 100.0
+
+
+class ProjectRename(BaseModel):
+    display_name: str
+
+
+@app.get("/projects")
+async def list_projects(current_user: dict = Depends(get_current_user)):
+    return {"projects": _list_all_projects()}
+
+
+@app.get("/projects/{file_id}")
+async def get_project(file_id: str, current_user: dict = Depends(get_current_user)):
+    if not _stems_ready(file_id):
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    meta = _read_project_meta(file_id) or {"file_id": file_id, "display_name": file_id}
+    meta["file_id"] = file_id
+    meta["status"] = "ready"
+    return meta
+
+
+@app.patch("/projects/{file_id}/name")
+async def rename_project(
+    file_id: str,
+    body: ProjectRename,
+    current_user: dict = Depends(get_current_user),
+):
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Nama proyek tidak boleh kosong")
+
+    meta = _read_project_meta(file_id)
+    if not meta:
+        upload_files = [
+            f for f in os.listdir(UPLOAD_DIR)
+            if f.startswith(file_id)
+            and not f.endswith(".txt")
+            and not f.endswith(PROJECT_META_SUFFIX)
+        ]
+        if not upload_files and not _stems_ready(file_id):
+            raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+        meta = {"file_id": file_id}
+
+    meta["file_id"] = file_id
+    meta["display_name"] = display_name[:120]
+    _write_project_meta(file_id, meta)
+    return {"status": "saved", "display_name": meta["display_name"]}
+
+
+@app.put("/projects/{file_id}/settings")
+async def save_project_settings(
+    file_id: str,
+    settings: ProjectSettings,
+    current_user: dict = Depends(get_current_user),
+):
+    if not _stems_ready(file_id):
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    meta = _read_project_meta(file_id) or {"file_id": file_id}
+    meta["settings"] = settings.model_dump()
+    _write_project_meta(file_id, meta)
+    return {"status": "saved"}
+
+
+@app.delete("/projects/{file_id}")
+async def delete_project(file_id: str, current_user: dict = Depends(get_current_user)):
+    if not _stems_ready(file_id) and not _read_project_meta(file_id):
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
+    stem_dir = _stems_dir_for_id(file_id)
+    if os.path.isdir(stem_dir):
+        shutil.rmtree(stem_dir, ignore_errors=True)
+
+    for fname in os.listdir(UPLOAD_DIR):
+        if fname.startswith(file_id):
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, fname))
+            except OSError:
+                pass
+
+    return {"status": "deleted"}
+
+
 @app.get("/audio/{file_id}/{stem_name}")
 async def get_audio(file_id: str, stem_name: str):
     # Note: Audio is served to frontend audio player, which might not easily send headers in <audio src>.
@@ -491,9 +732,6 @@ async def get_audio(file_id: str, stem_name: str):
         return JSONResponse(status_code=404, content={"message": "Stem not found"})
         
     return FileResponse(filepath)
-
-from pydantic import BaseModel
-from typing import Dict
 
 class MixParams(BaseModel):
     volumes: Dict[str, float]
@@ -521,7 +759,8 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
         
     export_dir = os.path.join(app_data, "exports")
     os.makedirs(export_dir, exist_ok=True)
-    out_filename = f"{filename_no_ext}_mix.mp3"
+    export_base = _export_display_name(file_id, filename_no_ext)
+    out_filename = f"{export_base} edit.mp3"
     out_filepath = os.path.join(export_dir, out_filename)
     
     command = ["ffmpeg", "-y"]
@@ -544,7 +783,7 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
         return JSONResponse(status_code=400, content={"message": "All tracks are muted"})
         
     mix_inputs = "".join([f"[a{i}]" for i in range(input_idx)])
-    filters.append(f"{mix_inputs}amix=inputs={input_idx}:normalize=0[mix]")
+    filters.append(f"{mix_inputs}amix=inputs={input_idx}:normalize=0:dropout_transition=0:duration=longest[mix]")
     
     # Build the post-mix processing chain
     current_label = "mix"
@@ -594,7 +833,11 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
     
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return {"status": "success", "download_url": f"/download_export/{out_filename}"}
+        return {
+            "status": "success",
+            "download_url": f"/download_export/{quote(out_filename)}",
+            "filename": out_filename,
+        }
     except subprocess.CalledProcessError as e:
         print("FFmpeg error:", e.stderr.decode('utf-8', errors='replace'))
         return JSONResponse(status_code=500, content={"message": "Error exporting mix"})
@@ -651,6 +894,91 @@ async def download_tab(filename: str):
     return FileResponse(filepath, media_type="text/plain", filename=filename)
 
 # ============================================
+# LYRICS ROUTES
+# ============================================
+from lyrics_fetcher import get_or_fetch_lyrics, load_cached_lyrics, cache_base_name, search_lyrics_candidates, apply_lyrics_for_track
+
+class LyricsFetchRequest(BaseModel):
+    track_name: str
+    duration: int | None = None
+    refresh: bool = False
+
+class LyricsSearchRequest(BaseModel):
+    artist: str = ""
+    title: str = ""
+    query: str = ""
+    duration: int | None = None
+
+class LyricsSelectRequest(BaseModel):
+    track_name: str
+    lrclib_id: int
+
+@app.post("/lyrics/fetch")
+def lyrics_fetch(req: LyricsFetchRequest, current_user: dict = Depends(get_current_user)):
+    track_name = req.track_name.strip()
+    if not track_name:
+        raise HTTPException(status_code=400, detail="Nama lagu tidak valid")
+    result = get_or_fetch_lyrics(LYRICS_CACHE_DIR, track_name, req.duration, req.refresh)
+    if not result.get("found"):
+        return {
+            "found": False,
+            "message": "Lirik tidak ditemukan di internet",
+            "search_artist": result.get("search_artist", ""),
+            "search_title": result.get("search_title", ""),
+        }
+    return {
+        "found": True,
+        "saved": result.get("saved", False),
+        "from_cache": result.get("from_cache", False),
+        "format": result.get("format"),
+        "content": result.get("content"),
+        "source": result.get("source", "cache"),
+        "filename": f"{cache_base_name(track_name)}.{result.get('format', 'lrc')}",
+        "search_artist": result.get("search_artist", ""),
+        "search_title": result.get("search_title", ""),
+    }
+
+@app.post("/lyrics/search")
+def lyrics_search(req: LyricsSearchRequest, current_user: dict = Depends(get_current_user)):
+    artist = req.artist.strip()
+    title = req.title.strip()
+    query = req.query.strip()
+    if not query and not title and not artist:
+        raise HTTPException(status_code=400, detail="Isi penyanyi, judul, atau kata kunci pencarian")
+    results = search_lyrics_candidates(artist, title, req.duration, query or None)
+    return {"results": results, "count": len(results)}
+
+@app.post("/lyrics/select")
+def lyrics_select(req: LyricsSelectRequest, current_user: dict = Depends(get_current_user)):
+    track_name = req.track_name.strip()
+    if not track_name:
+        raise HTTPException(status_code=400, detail="Nama lagu tidak valid")
+    result = apply_lyrics_for_track(LYRICS_CACHE_DIR, track_name, req.lrclib_id)
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail="Lirik tidak ditemukan")
+    return {
+        "found": True,
+        "format": result.get("format"),
+        "content": result.get("content"),
+        "source": result.get("source", "lrclib"),
+        "search_artist": result.get("search_artist", ""),
+        "search_title": result.get("search_title", ""),
+    }
+
+@app.get("/lyrics/download")
+def lyrics_download(track_name: str, current_user: dict = Depends(get_current_user)):
+    cached = load_cached_lyrics(LYRICS_CACHE_DIR, track_name.strip())
+    if not cached:
+        return JSONResponse(status_code=404, content={"message": "Lirik belum tersimpan"})
+    fmt = cached["format"]
+    filename = f"{cache_base_name(track_name.strip())}.{fmt}"
+    media = "application/lrc" if fmt == "lrc" else "text/plain"
+    from fastapi.responses import Response
+    return Response(
+        content=cached["content"],
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 # ============================================
 # YOUTUBE TO MP3 ROUTES
@@ -871,6 +1199,95 @@ if os.path.exists(FRONTEND_DIR):
             return FileResponse(index_path)
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
+APP_HOST = "127.0.0.1"
+APP_PORT = 8000
+APP_URL = f"http://{APP_HOST}:{APP_PORT}"
+
+
+def _server_is_running() -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{APP_URL}/license/status", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _port_is_listening(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        return sock.connect_ex((APP_HOST, port)) == 0
+
+
+def _win_creationflags():
+    if sys.platform == "win32":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
+
+
+def _kill_processes_on_port(port: int) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=_win_creationflags(),
+        )
+        pids = set()
+        for line in result.stdout.splitlines():
+            if f":{port}" not in line or "LISTENING" not in line:
+                continue
+            parts = line.split()
+            if parts and parts[-1].isdigit():
+                pid = int(parts[-1])
+                if pid != os.getpid():
+                    pids.add(str(pid))
+        for pid in pids:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", pid],
+                capture_output=True,
+                creationflags=_win_creationflags(),
+            )
+    except Exception:
+        pass
+
+
+def _show_windows_message(title: str, message: str) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
+    except Exception:
+        pass
+
+
+def _prepare_bundled_startup() -> str:
+    """
+    Returns:
+      'focus'  - server already running, caller should open browser and exit
+      'start'  - safe to start uvicorn
+      'blocked' - port still busy after cleanup
+    """
+    import time
+
+    if _server_is_running():
+        return "focus"
+
+    if _port_is_listening(APP_PORT):
+        _kill_processes_on_port(APP_PORT)
+        time.sleep(0.6)
+        if _server_is_running():
+            return "focus"
+
+    if _port_is_listening(APP_PORT) and not _server_is_running():
+        return "blocked"
+    return "start"
+
+
 if __name__ == "__main__":
     import uvicorn
     import sys
@@ -889,12 +1306,24 @@ if __name__ == "__main__":
                 def fileno(self): return -1
             sys.stdout = DummyStream()
             sys.stderr = DummyStream()
+
+        startup_mode = _prepare_bundled_startup()
+        if startup_mode == "focus":
+            webbrowser.open(APP_URL)
+            sys.exit(0)
+        if startup_mode == "blocked":
+            _show_windows_message(
+                "Jagat Audio",
+                "Port 8000 masih dipakai aplikasi lain.\n"
+                "Tutup aplikasi tersebut lalu coba buka Jagat Audio lagi.",
+            )
+            sys.exit(1)
             
         def open_browser():
             time.sleep(1.5) # Wait for uvicorn to start
-            webbrowser.open("http://127.0.0.1:8000")
+            webbrowser.open(APP_URL)
             
         threading.Thread(target=open_browser, daemon=True).start()
-        uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
+        uvicorn.run(app, host=APP_HOST, port=APP_PORT, log_config=None)
     else:
         uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

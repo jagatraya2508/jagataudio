@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "7DE2-2741-82D2-2E61-0D0F-91F9-D7B3-C141",
+    "license_type": "3m",
+    "customer_name": "Ozicobain",
+    "issued_date": "2026-07-02T06:13:24.478134",
+    "expiry_date": "2026-09-30T06:13:24.478134",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "Upn2nw4L3FARzJWC5eCazviLFHTX5c5yLCxlj3ByX3/yaOstkZqJAlH7jmaiJzV2hUyVjnYdKwD0mjb3tVlr5NhmOx/6Dn6gEpv7HZ58Z3r8s7+ZbVv0CrXZUdrTdZVixalHB8ngBmDhvEXCDLw2cMlQE+pBKJEYsI8PAV6iz5rG70KgA/Ybr2nxMnn6vSw3JeEuin05Nd4Ty3GGGthbl/KyujMq17FG+YiYrECPHcng3CFltbvWSEszp3kJ0SiftqNsq13oxFwTnU4i3bnRW0Rwc6/5Jfyi3FcjIAsKXMPIXM3AIpYgUXf+YapsEkkaKNYB4knIGdiLvKbORI5/Eg=="
+}

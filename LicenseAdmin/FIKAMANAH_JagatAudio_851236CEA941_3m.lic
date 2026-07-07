@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "8512-36CE-A941-19EE-B832-EF05-4FAD-5CEE",
+    "license_type": "3m",
+    "customer_name": "FIKAMANAH",
+    "issued_date": "2026-07-05T04:40:42.316162",
+    "expiry_date": "2026-10-03T04:40:42.316162",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "L3XmAsu7CPv3F77FN4OuZ+N6N5Z0uFIS2zvfQqour5AAJuRNWVZQekHqCwDyvS7QYTKEjcpxpo46oXJHsJhv0j3AivyL79Inu5nl5KiABInGJQy0ilDSunDpCtcbJCtxAf2wAW7SGmbAv0HJniDFXO+WHNbnhziZqf7lu4xTd65t+csM3aXRuCNMC17AZ0GavYWd5DTnyW7MOiym/L1wo0TdezsK5DnpeFqtSHxweqqPPlAkfgMICx5Dul4jUjju+lnH7oRYSosgij3pmjzncksHXnUzpRn+Aa8I5wFqtnPXmYwEBve/P0pg81mP8lnNgwVsCQoxtulkCJ2gpSE9aw=="
+}

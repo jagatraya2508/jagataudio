@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "7DE2-2741-82D2-2E61-0D0F-91F9-D7B3-C141",
+    "license_type": "3m",
+    "customer_name": "Fahrul",
+    "issued_date": "2026-07-02T07:46:38.729247",
+    "expiry_date": "2026-09-30T07:46:38.729247",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "XEUG5EDjVNR2H+GB2up133RbWmXegNtkq53XyCIWz4l9v5WElN2zC+C5gU+xuEM1muzcjgQaCZLUM1HAe5XQt3W1ircu5Agx9t/TV+liNxEEzLcPpJKEH6sjfOWhNHrPpCCCGWE3JFgPXNAkZzIadp5d9W/Mrn9nFG/ScDJaXqaD6UCRlxbkWR4AO2IgPVB0L1gw8vSLA3T73nEXyNxNe2BEo/Zk7HBcgGvgOq78TrzE/IJhAxfKpMJEzcNhZbNFdxABMo77VsxH1cegJK1h2k95peJz+qwkK7jv8ZssOOD3I/IXurdzssRElApZE5c6sb2JRfh1iGHJRlQk9Ipf5g=="
+}

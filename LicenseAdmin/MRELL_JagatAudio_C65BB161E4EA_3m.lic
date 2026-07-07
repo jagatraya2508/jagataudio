@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "C65B-B161-E4EA-D1F4-787C-979C-54E3-97BD",
+    "license_type": "3m",
+    "customer_name": "MRELL",
+    "issued_date": "2026-07-03T02:50:54.533344",
+    "expiry_date": "2026-10-01T02:50:54.533344",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "H0JKSOtjNUVwt1uHmBhvw+Sc5pjrQZBYR4YcD4dXswvLw3V9mIxoz5CxD9imCeKiWRlkBSQUezX+kCHEhOHJi1Z9O9gqOKQwSmMMAc8oOtbMdf7tb7NxgYwlNuM3K+ZXnU/iRNY7stCya65XKbXi+GWm+xTX793u8ZAmnIMnfgGfT442uvKFKeMyfZ1Wht0AVTaPwOX2Pg/sL0FaNtKW4sUDC3Ngg347I5/VAvqZrWj2vYhevuYM6Wfpmli3wj/iYZ4frkjj5I9KYJ2aanD98FrwMiSsepgCIlSLTLjBOiA4mC0rrM3RQaVX5cfl9ROgtKim4seT9SZXebSVAG+f9g=="
+}

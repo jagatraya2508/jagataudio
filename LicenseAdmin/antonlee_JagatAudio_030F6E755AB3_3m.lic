@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "030F-6E75-5AB3-8760-91FB-3595-10E1-4DF0",
+    "license_type": "3m",
+    "customer_name": "antonlee",
+    "issued_date": "2026-07-01T07:40:15.679654",
+    "expiry_date": "2026-09-29T07:40:15.679654",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "NcbT1Aap+jDYvYjIqGtgzCwmMQSKlS0rJR/naDb1eIreP4NLLTb3JqsHCvYjoQQeXFqgwmoXPAbp9AQM08x0GI1hxlOSEgpp+0+IVKqgSW06L1qCilGz04lIL2M7p9NkI58jNGYx/AMC4DZjpQWMFwK922C1vP2nStJyIP189iuQDBPsrJGzDtaxyZ4lxB6lgkMsWiH4WcooTETVPeHxD90T0tlDj25mkuubABIY2SiwurNRpafMQhAd5mqjahebNplWCgnsE8GJqgKHi+dpP5vt2aByGkS50Dogn1U8DV33YvMRBoN+ub51QuzwtGx//XT035VQRww+ifU+1QhTZQ=="
+}

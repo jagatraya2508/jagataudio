@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "5F02-7CD6-08B6-6E5D-2471-0BD9-F847-9239",
+    "license_type": "3m",
+    "customer_name": "wacht",
+    "issued_date": "2026-07-02T06:13:00.492816",
+    "expiry_date": "2026-09-30T06:13:00.492816",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "k8vCJI/OEPXw9Bouj6Inzzd2uArMR89+aRZX0G0mg3DVBBasZt+arGoQiDkTxVAtuk8CdMqZRiKOzwm1K8SgrPiAuOvaGfr9x7Pca7NobU4raBCIlX6rhaGS3404CH90d70pE+Wam/FGzrfyjyPOFrFWEjzKx73i+lSm73Af3+PBhrce6pHqFAP5x5Wu2nUm2ggZgRUs5D4Qi0EsQ1IXGm1pMPzFuZKnuvyKGh+1v6IaEI6lk/OIq2zqKctnTcLQgtelIMRz7sLcJGWKFuOdgsLHsFGM58jkT9lyzo5UHjwTEMpl2mN0ta3cGAl4fWmuPdjHAiNtw7cZI4v4an4gBw=="
+}

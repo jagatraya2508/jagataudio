@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "5F02-7CD6-08B6-6E5D-2471-0BD9-F847-9239",
+    "license_type": "3m",
+    "customer_name": "rizki",
+    "issued_date": "2026-07-02T07:45:11.569141",
+    "expiry_date": "2026-09-30T07:45:11.569141",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "nGIs/LYzeaBIwWRTQBTPYkfRx6qbsitQIMZkOvUYxnCYfV3DO/AcJ55hUZtvo+SiaMCr2o0mn9dNIouvV8xsVCJ94roMVUiwiEtIO1/wNyvdRVtFOTK26Xodx54mMxWkHE9utemLKTEZPr1k5pbbDeLpvuOj2mUpuoNAlQU9pbyUxBLAj2h6DWgwEEtgv+JoHOmgghCkeiEOY+KZUmlksn6sAfLGvXG8MFjUyOg2PDCRBGQJ7UXR/OpzMVAU/15gQhBQqRzetoVvlLU5G98h37tYbr+0yXCNemKNLMvs7DlPkocmv9MV5/yFfQ22d0dZ84IUaJxjUlaT23UwKSZPmA=="
+}

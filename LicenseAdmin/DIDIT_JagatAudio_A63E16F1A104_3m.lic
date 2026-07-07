@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "A63E-16F1-A104-D7B4-9B96-059E-92BC-9BEA",
+    "license_type": "3m",
+    "customer_name": "DIDIT",
+    "issued_date": "2026-07-02T07:43:53.631103",
+    "expiry_date": "2026-09-30T07:43:53.631103",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "actsS2oKYWd/3TlGa6+cLmfvDQ2uV9r8ICdkYw6V0vYT7CWNOM9LfwNsa/oNeN+WXUEIlGxk197GLIx/R7d9XFWltiApU4r2tNhcaoR6EqkFmjPYqmDt7ZBbxcfddfzFAdSzaj6SPPcrgQSpngkEuW3Gpuqj8dZ89buNFCP2Nr9puiJES3xFcRyam0Zh2vLYIp8SQklljod/oMAJV2j5IY5mKkCku8vXnZvIB33xqErsi2N5yiaagXlDQJ6qC8S/2/ZhVOO7H+36CXA5xkDgCoC6YRGt/XpCJkfTlYmxG0B8XIru0MLSq8qR69noa/a8kX/AuHEuNN0U9zLxe74dpQ=="
+}

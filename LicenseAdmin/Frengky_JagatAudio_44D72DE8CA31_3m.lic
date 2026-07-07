@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "44D7-2DE8-CA31-D421-3D65-C01A-74F1-27E5",
+    "license_type": "3m",
+    "customer_name": "Frengky",
+    "issued_date": "2026-07-07T03:48:31.247290",
+    "expiry_date": "2026-10-05T03:48:31.247290",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "iXga7ELwXC31YBiG0JUvRDL4IqgxaEf+wZ+uS0vH3PTil2jwCsS9n0QPp8RlzQS8aS1Pcg94+WsWhEP0Q6rXkn7g5R/7UP9XNfa7qH2qHmuBpXylDz4Xp6n4l3XZxSFneZAxPVVIhCkdlEkQlbPIpqQqd1VetBh3IPAOBL7b5UEI/3LBt64kiElCkQ87x5cEFucL8ONwiJgpDIQcZwtx7YzKNsXvmDoHsgOZto4JQRPr3INgbyJ+DzB8Vqe8qKh4DrX1CJsOlpAlaIkpACN/s5dl5DKFAraZ/FLFMUBUDShNf/GXJRVuSrU3SCUldONMXuA2mvV0cEKs4l2WYpECyw=="
+}

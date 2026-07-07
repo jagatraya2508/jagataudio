@@ -253,7 +253,7 @@ def create_license(hardware_id: str, duration: str, customer_name: str = ""):
         "issued_date": issued_date.isoformat(),
         "expiry_date": expiry_date.isoformat(),
         "product": "JagatAudio",
-        "version": "1.0"
+        "version": "1.1"
     }
     
     # Serialize payload
