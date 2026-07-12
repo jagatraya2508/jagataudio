@@ -60,6 +60,7 @@ class LicenseGeneratorApp:
         # Generate Button
         ttk.Button(main_frame, text="Generate File Lisensi (.lic)", command=self.generate).pack(fill=tk.X, pady=10)
         
+        
     def generate(self):
         hwid = self.hwid_var.get().strip()
         name = self.name_var.get().strip()

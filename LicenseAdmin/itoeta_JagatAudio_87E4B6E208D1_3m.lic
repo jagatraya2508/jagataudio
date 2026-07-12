@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "87E4-B6E2-08D1-EEB6-3FE9-5381-36C0-60DD",
+    "license_type": "3m",
+    "customer_name": "itoeta",
+    "issued_date": "2026-07-10T09:54:27.297028",
+    "expiry_date": "2026-10-08T09:54:27.297028",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "j+yiNXoGz1T8x8IPBFJ9OZbYQLo6MnDtOWyqmpzFwD07M5pdrIWlrQ6TtbZYjRWt/ov1aOgn77tRvjp6URHcGo770NgGLvdkaPUcIT6kxDoa3azYyVUjj3giCTQg0h6J9gBdORCMO5bgyexEr97LyZivHIRfzQCXnTDB97isvkpiWICucFZFTUvUW7AuvK9DPkJF7+ju4R4OLq+i/yE1bKQVpbAZvGjClxOM6GbcxduhfvmqHG9WgGMA3O4QFcZ+SC0w7+NiVqC54QDFgQxt5QB6zhqVJ61oPWUPhIOMuhfoDfkMv2CX3ENMDz9QN8aguY6+DNmcwYMF2TA7QYs9DQ=="
+}

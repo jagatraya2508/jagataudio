@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "B143-AF09-0C50-1141-61CE-2558-C187-D7D8",
+    "license_type": "3m",
+    "customer_name": "RZ",
+    "issued_date": "2026-07-10T09:55:05.507332",
+    "expiry_date": "2026-10-08T09:55:05.507332",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "BxGGCCQYleCi72Gbf1+N5mVfmvjwvT1AbsntgYn2nAlPuYMVC9G9AmWffO8G10lZFlbs599zOc/9i5849OF5XDkACSWS1sGNEy1A/Ofms4E0LM59i1cZf22KzhXlZWfMb0zvFresDCH++/AHmIfOwEDW1tzovnc5coNhITqfbPfSShWo9RJgny/H33yL+ilaMuDa1JPNlPDYSxJDXRvI6qzQkTawKDK/5SZCGvbAmd3PrWRe7YT2pmQivO2suZaHVDDBLjcFeqE39hpKLFPcOSz1lsRDLkfAsPVdzd0gFLJYKVQ69NDAF4zJayzkOvdS8A67GoJg4hQKFAGWcmW1pw=="
+}

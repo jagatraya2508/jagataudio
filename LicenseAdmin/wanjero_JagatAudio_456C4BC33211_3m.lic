@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "456C-4BC3-3211-7F51-8571-58F4-F269-5810",
+    "license_type": "3m",
+    "customer_name": "wanjero",
+    "issued_date": "2026-07-11T15:34:25.883983",
+    "expiry_date": "2026-10-09T15:34:25.883983",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "ljT5kmid2yNgCCYXuSXUoLZINlzipCwapiwwSkhmKfI2mey5IGYm6rEtFA0NRF5i2OP8FdkiUCKpUA61GZx8bDDsKQZxMj/wdD/Fa/VzIYRNuV5u8LUZxYUuTzPmtDLBb43MNAj7Bo6Oag90m8uxtrBooi+tgBAMLYrk/ctVJY9JXaXqsJvABECfHeBs4qMRat/NERCI/Dn4iwhSNB4qGh2/czDM80tRskqWg71VeN+H4nyiQ661KD5W/b+6tuD90lmEz8o/F5C4qzzR02d9A6roZZszDBqdgcx/w2fixA1NFRrk2g39kMK0PW6z03AcWgtMn0e8ICzhIpzmu878+g=="
+}

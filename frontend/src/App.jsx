@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = `http://${window.location.hostname}:8000`;
@@ -203,6 +203,7 @@ function App() {
   const [players, setPlayers] = useState({});
   const [volumes, setVolumes] = useState({});
   const [mutes, setMutes] = useState({});
+  const [pans, setPans] = useState({});
   const [pitch, setPitch] = useState(0); // -12 to 12 semitones
   const [tempo, setTempo] = useState(1); // 0.5 to 2.0 playback rate
   const [stemCurrentTime, setStemCurrentTime] = useState(0);
@@ -233,6 +234,11 @@ function App() {
   const [eqHigh, setEqHigh] = useState(0);  // -12 to 12 dB
   const [compressorEnabled, setCompressorEnabled] = useState(false);
   const [masterVolume, setMasterVolume] = useState(0); // -60 to 6 dB
+  
+  // Audio Trimming state
+  const [trimEnabled, setTrimEnabled] = useState(false);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(null); // null = full length
   
   // Original audio and progress states
   const [originalUrl, setOriginalUrl] = useState(null);
@@ -439,8 +445,10 @@ function App() {
 
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
+  const pannerNodesRef = useRef({});
   const masterEqRef = useRef(null);
   const masterCompressorRef = useRef(null);
+  const masterPitchShiftRef = useRef(null);
   const masterLimiterRef = useRef(null);
   const ytAnimFrameRef = useRef(null);
   const originalAudioRef = useRef(null);
@@ -1021,8 +1029,20 @@ function App() {
 
     const onPlayFail = (err) => {
       console.error('MP3 play error:', err);
+      // AbortError means a new load() interrupted play — not a real failure
+      if (err?.name === 'AbortError') return;
+
+      // NotAllowedError = browser autoplay policy — show status hint
+      if (err?.name === 'NotAllowedError') {
+        setMp3LyricsStatus('Klik tombol play untuk memutar lagu ini.');
+        setMp3IsPlaying(false);
+        setMp3TrackLoading(false);
+        return;
+      }
+
       setMp3IsPlaying(false);
       setMp3TrackLoading(false);
+      setMp3LyricsStatus(`Gagal memutar lagu "${track.name}". File mungkin rusak atau format tidak didukung.`);
     };
 
     // Same track already loaded — play/resume immediately (still in user click gesture)
@@ -1042,14 +1062,43 @@ function App() {
     setMp3TrackLoading(autoPlay);
     mp3LoadedTrackRef.current = index;
 
+    // Clean up any previous canplay listeners
+    audio.removeAttribute('data-canplay-retry');
+
     audio.src = track.url;
     audio.load();
 
     if (autoPlay) {
-      // play() must run synchronously in the click handler
+      // Try playing immediately (synchronous in click handler for autoplay policy)
       const playPromise = audio.play();
       if (playPromise !== undefined) {
-        playPromise.then(onPlaySuccess).catch(onPlayFail);
+        playPromise.then(onPlaySuccess).catch((err) => {
+          // If play() fails because audio isn't ready yet, wait for canplay and retry
+          if (err?.name === 'AbortError' || (err?.name === 'NotAllowedError' && audio.readyState < 2)) {
+            // Use a one-time canplay listener to retry
+            const retryOnCanPlay = () => {
+              audio.removeEventListener('canplay', retryOnCanPlay);
+              audio.removeEventListener('error', onErrorCleanup);
+              // Only retry if this is still the active track
+              if (mp3LoadedTrackRef.current === index) {
+                audio.play().then(onPlaySuccess).catch(onPlayFail);
+              }
+            };
+            const onErrorCleanup = () => {
+              audio.removeEventListener('canplay', retryOnCanPlay);
+              audio.removeEventListener('error', onErrorCleanup);
+              const mediaErr = audio.error;
+              console.error('Audio load error during retry:', mediaErr);
+              setMp3IsPlaying(false);
+              setMp3TrackLoading(false);
+              setMp3LyricsStatus(`Gagal memuat lagu "${track.name}". File mungkin rusak atau format tidak didukung.`);
+            };
+            audio.addEventListener('canplay', retryOnCanPlay, { once: true });
+            audio.addEventListener('error', onErrorCleanup, { once: true });
+          } else {
+            onPlayFail(err);
+          }
+        });
       }
     } else {
       setMp3TrackLoading(false);
@@ -1200,11 +1249,13 @@ function App() {
     const updateProgress = () => {
       if (Tone.Transport.state === 'started') {
         const currentTime = Tone.Transport.seconds;
-        if (stemDuration > 0 && currentTime >= stemDuration) {
+        const effectiveEnd = trimEnabled && trimEnd != null ? trimEnd : stemDuration;
+        if (effectiveEnd > 0 && currentTime >= effectiveEnd) {
            Tone.Transport.stop();
            setIsPlaying(false);
-           Tone.Transport.seconds = 0;
-           setStemCurrentTime(0);
+           const resetTo = trimEnabled ? trimStart : 0;
+           Tone.Transport.seconds = resetTo;
+           setStemCurrentTime(resetTo);
         } else {
            setStemCurrentTime(currentTime);
            animationFrameId = requestAnimationFrame(updateProgress);
@@ -1215,7 +1266,7 @@ function App() {
       animationFrameId = requestAnimationFrame(updateProgress);
     }
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, stemDuration]);
+  }, [isPlaying, stemDuration, trimEnabled, trimStart, trimEnd]);
 
   const resetStemLyrics = () => {
     setStemLyrics(null);
@@ -1769,6 +1820,7 @@ function App() {
 
     const volMap = settings.volumes || {};
     const muteMap = settings.mutes || {};
+    const panMap = settings.pans || {};
 
     INSTRUMENTS.forEach(({ id }) => {
       const vol = volMap[id] ?? 0;
@@ -1781,12 +1833,19 @@ function App() {
 
     const nextVols = {};
     const nextMutes = {};
+    const nextPans = {};
     INSTRUMENTS.forEach(({ id }) => {
       nextVols[id] = volMap[id] ?? 0;
       nextMutes[id] = !!muteMap[id];
+      const panVal = panMap[id] ?? 0;
+      nextPans[id] = panVal;
+      if (pannerNodesRef.current[id]) {
+        pannerNodesRef.current[id].pan.value = panVal / 100;
+      }
     });
     setVolumes(nextVols);
     setMutes(nextMutes);
+    setPans(nextPans);
 
     const nextPitch = settings.pitch ?? 0;
     const nextTempo = settings.tempo ?? 1;
@@ -1861,6 +1920,7 @@ function App() {
         body: JSON.stringify({
           volumes,
           mutes,
+          pans,
           pitch,
           tempo,
           eq_low: eqLow,
@@ -1876,7 +1936,7 @@ function App() {
       console.error(e);
     }
   }, [
-    fileId, token, status, volumes, mutes, pitch, tempo,
+    fileId, token, status, volumes, mutes, pans, pitch, tempo,
     eqLow, eqMid, eqHigh, compressorEnabled, masterVolume, stemLyricsOffsetMs, stemLyricsSpeedPct,
   ]);
 
@@ -1886,6 +1946,7 @@ function App() {
     setIsPlaying(false);
     Object.values(playersRef.current).forEach((p) => p.dispose());
     Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
+    Object.values(pannerNodesRef.current).forEach((p) => { try { p.dispose(); } catch {} });
     if (masterEqRef.current) {
       masterEqRef.current.dispose();
       masterEqRef.current = null;
@@ -1900,7 +1961,12 @@ function App() {
     }
     playersRef.current = {};
     volumeNodesRef.current = {};
+    pannerNodesRef.current = {};
     setPlayers({});
+    setPans({});
+    setTrimEnabled(false);
+    setTrimStart(0);
+    setTrimEnd(null);
     setFile(null);
     setOriginalUrl(null);
     setFileId(null);
@@ -1921,27 +1987,34 @@ function App() {
 
       Object.values(playersRef.current).forEach(p => p.dispose());
       Object.values(volumeNodesRef.current).forEach(v => v.dispose());
+      Object.values(pannerNodesRef.current).forEach(p => { try { p.dispose(); } catch {} });
       if (masterEqRef.current) { masterEqRef.current.dispose(); masterEqRef.current = null; }
       if (masterCompressorRef.current) { masterCompressorRef.current.dispose(); masterCompressorRef.current = null; }
+      if (masterPitchShiftRef.current) { masterPitchShiftRef.current.dispose(); masterPitchShiftRef.current = null; }
       if (masterLimiterRef.current) { masterLimiterRef.current.dispose(); masterLimiterRef.current = null; }
 
       const masterEq = new Tone.EQ3(0, 0, 0);
       const masterCompressor = new Tone.Compressor({ threshold: 0, ratio: 1, attack: 0.01, release: 0.1 });
+      const masterPitchShift = new Tone.PitchShift({ pitch: pitch, windowSize: 0.1, delayTime: 0, feedback: 0 });
       const masterLimiter = new Tone.Limiter(-1);
-      masterEq.chain(masterCompressor, masterLimiter, Tone.Destination);
+      masterEq.chain(masterCompressor, masterPitchShift, masterLimiter, Tone.Destination);
       masterEqRef.current = masterEq;
       masterCompressorRef.current = masterCompressor;
+      masterPitchShiftRef.current = masterPitchShift;
       masterLimiterRef.current = masterLimiter;
 
       const newPlayers = {};
       const newVolumes = {};
+      const newPanners = {};
       const initVols = {};
       const initMutes = {};
+      const initPans = {};
       let loadedCount = 0;
 
       const loadPromises = INSTRUMENTS.map((inst) => {
         const url = `${API_BASE_URL}/audio/${id}/${inst.id}.mp3`;
-        const volNode = new Tone.Volume(0).connect(masterEq);
+        const panNode = new Tone.Panner(0).connect(masterEq);
+        const volNode = new Tone.Volume(0).connect(panNode);
 
         return new Promise((resolve, reject) => {
           const player = new Tone.Player({
@@ -1959,8 +2032,10 @@ function App() {
 
           newPlayers[inst.id] = player;
           newVolumes[inst.id] = volNode;
+          newPanners[inst.id] = panNode;
           initVols[inst.id] = 0;
           initMutes[inst.id] = false;
+          initPans[inst.id] = 0;
         });
       });
 
@@ -1968,10 +2043,12 @@ function App() {
 
       playersRef.current = newPlayers;
       volumeNodesRef.current = newVolumes;
+      pannerNodesRef.current = newPanners;
 
       setPlayers(newPlayers);
       setVolumes(initVols);
       setMutes(initMutes);
+      setPans(initPans);
 
       if (settings) {
         applyProjectSettings(settings);
@@ -2095,7 +2172,7 @@ function App() {
     saveSettingsTimeoutRef.current = setTimeout(() => saveProjectSettings(), 800);
     return () => clearTimeout(saveSettingsTimeoutRef.current);
   }, [
-    status, fileId, volumes, mutes, pitch, tempo,
+    status, fileId, volumes, mutes, pans, pitch, tempo,
     eqLow, eqMid, eqHigh, compressorEnabled, stemLyricsOffsetMs, stemLyricsSpeedPct,
     saveProjectSettings,
   ]);
@@ -2103,6 +2180,15 @@ function App() {
   const togglePlay = async () => {
     if (Tone.Transport.state !== 'started') {
       await Tone.start();
+      // If trim is enabled and current position is outside trim range, seek to start
+      if (trimEnabled && trimStart > 0) {
+        const cur = Tone.Transport.seconds;
+        const end = trimEnd != null ? trimEnd : stemDuration;
+        if (cur < trimStart || cur >= end) {
+          Tone.Transport.seconds = trimStart;
+          setStemCurrentTime(trimStart);
+        }
+      }
       Tone.Transport.start();
       setIsPlaying(true);
     } else {
@@ -2115,6 +2201,13 @@ function App() {
     setVolumes(prev => ({ ...prev, [instId]: value }));
     if (!mutes[instId] && volumeNodesRef.current[instId]) {
       volumeNodesRef.current[instId].volume.value = value;
+    }
+  };
+
+  const handlePanChange = (instId, value) => {
+    setPans(prev => ({ ...prev, [instId]: value }));
+    if (pannerNodesRef.current[instId]) {
+      pannerNodesRef.current[instId].pan.value = value / 100; // Tone.Panner uses -1 to 1
     }
   };
 
@@ -2131,11 +2224,9 @@ function App() {
   const handlePitchChange = (e) => {
     const val = parseFloat(e.target.value);
     setPitch(val);
-    Object.values(playersRef.current).forEach(p => {
-      if (p && p.detune !== undefined) {
-        p.detune = val * 100; // 1 semitone = 100 cents
-      }
-    });
+    if (masterPitchShiftRef.current) {
+      masterPitchShiftRef.current.pitch = val;
+    }
   };
 
   const handleTempoChange = (e) => {
@@ -2197,12 +2288,15 @@ function App() {
         body: JSON.stringify({
           volumes: volumes,
           mutes: mutes,
+          pans: pans,
           pitch: pitch,
           tempo: tempo,
           eq_low: eqLow,
           eq_mid: eqMid,
           eq_high: eqHigh,
-          compressor_enabled: compressorEnabled
+          compressor_enabled: compressorEnabled,
+          trim_start: trimEnabled ? trimStart : 0,
+          trim_end: trimEnabled ? trimEnd : null,
         })
       });
       
@@ -3127,6 +3221,23 @@ function App() {
                       {isExporting ? <Loader2 size={20} className="spinner" /> : <Download size={20} />}
                       <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : 'Export MP3'}</span>
                     </button>
+                    <button 
+                      className={`process-btn trim-toggle-btn ${trimEnabled ? 'active' : ''}`}
+                      onClick={() => {
+                        const next = !trimEnabled;
+                        setTrimEnabled(next);
+                        if (next && trimEnd == null && stemDuration > 0) {
+                          setTrimEnd(stemDuration);
+                        }
+                      }}
+                      style={{ 
+                        padding: '0.8rem 1.5rem', borderRadius: '12px',
+                        background: trimEnabled ? 'linear-gradient(135deg, #ff477e, #ff9f1c)' : undefined,
+                      }}
+                    >
+                      <Scissors size={20} />
+                      <span style={{ marginLeft: '8px' }}>{trimEnabled ? 'Trim ON' : 'Potong Lagu'}</span>
+                    </button>
                   </div>
                   <div className="global-sliders" style={{ margin: 0 }}>
                     <div className="slider-group">
@@ -3154,6 +3265,108 @@ function App() {
                   />
                   <span className="time-display">{formatTime(stemDuration)}</span>
                 </div>
+
+                {/* Trim Controls Panel */}
+                {trimEnabled && stemDuration > 0 && (
+                  <div className="trim-controls glass-panel">
+                    <div className="trim-header">
+                      <Scissors size={16} color="#ff477e" />
+                      <span>Potong Lagu</span>
+                      <button 
+                        className="trim-reset-btn"
+                        onClick={() => { setTrimStart(0); setTrimEnd(stemDuration); }}
+                        title="Reset ke full"
+                      >
+                        <RotateCcw size={14} /> Reset
+                      </button>
+                    </div>
+                    <div className="trim-range-container">
+                      <div 
+                        className="trim-highlight"
+                        style={{
+                          left: `${(trimStart / stemDuration) * 100}%`,
+                          width: `${(((trimEnd ?? stemDuration) - trimStart) / stemDuration) * 100}%`,
+                        }}
+                      />
+                      <input
+                        type="range"
+                        min="0"
+                        max={stemDuration}
+                        step="0.1"
+                        value={trimStart}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (v < (trimEnd ?? stemDuration)) setTrimStart(v);
+                        }}
+                        className="trim-range-slider trim-start"
+                      />
+                      <input
+                        type="range"
+                        min="0"
+                        max={stemDuration}
+                        step="0.1"
+                        value={trimEnd ?? stemDuration}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (v > trimStart) setTrimEnd(v);
+                        }}
+                        className="trim-range-slider trim-end"
+                      />
+                    </div>
+                    <div className="trim-time-inputs">
+                      <div className="trim-time-field">
+                        <label>Mulai</label>
+                        <input
+                          type="text"
+                          value={formatTime(trimStart)}
+                          onChange={(e) => {
+                            const parts = e.target.value.split(':');
+                            if (parts.length === 2) {
+                              const secs = parseInt(parts[0]) * 60 + parseFloat(parts[1]);
+                              if (!isNaN(secs) && secs >= 0 && secs < (trimEnd ?? stemDuration)) setTrimStart(secs);
+                            }
+                          }}
+                          className="trim-time-input"
+                        />
+                      </div>
+                      <div className="trim-duration-label">
+                        Durasi: {formatTime((trimEnd ?? stemDuration) - trimStart)}
+                      </div>
+                      <div className="trim-time-field">
+                        <label>Akhir</label>
+                        <input
+                          type="text"
+                          value={formatTime(trimEnd ?? stemDuration)}
+                          onChange={(e) => {
+                            const parts = e.target.value.split(':');
+                            if (parts.length === 2) {
+                              const secs = parseInt(parts[0]) * 60 + parseFloat(parts[1]);
+                              if (!isNaN(secs) && secs > trimStart && secs <= stemDuration) setTrimEnd(secs);
+                            }
+                          }}
+                          className="trim-time-input"
+                        />
+                      </div>
+                    </div>
+                    <button 
+                      className="process-btn trim-export-btn"
+                      onClick={exportMix}
+                      disabled={isExporting}
+                      style={{ 
+                        width: '100%', marginTop: '0.75rem', padding: '0.7rem',
+                        borderRadius: '10px',
+                        background: 'linear-gradient(135deg, #ff477e, #ff9f1c)',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {isExporting ? <Loader2 size={18} className="spinner" /> : <Download size={18} />}
+                      <span style={{ marginLeft: '8px' }}>
+                        {isExporting ? 'Mengekspor...' : `Simpan Potongan (${formatTime(trimStart)} - ${formatTime(trimEnd ?? stemDuration)})`}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
               </div>
             </div>
 
@@ -3176,6 +3389,28 @@ function App() {
                       className="vertical-slider"
                       orient="vertical"
                     />
+                  </div>
+
+                  <div className="channel-db-label" style={{ color: inst.color }}>
+                    {volumes[inst.id] <= -60 ? '-∞' : (volumes[inst.id] > 0 ? '+' : '') + Math.round(volumes[inst.id])} <span className="db-unit">dB</span>
+                  </div>
+
+                  <div className="channel-pan-control">
+                    <span className="pan-label">L</span>
+                    <input
+                      type="range"
+                      min="-100"
+                      max="100"
+                      step="1"
+                      value={pans[inst.id] ?? 0}
+                      onChange={(e) => handlePanChange(inst.id, parseInt(e.target.value))}
+                      className="pan-slider"
+                      style={{ '--theme-color': inst.color }}
+                    />
+                    <span className="pan-label">R</span>
+                  </div>
+                  <div className="pan-value-label" style={{ color: inst.color }}>
+                    {(pans[inst.id] ?? 0) === 0 ? 'C' : (pans[inst.id] > 0 ? `R${pans[inst.id]}` : `L${Math.abs(pans[inst.id])}`)}
                   </div>
                   
                   <div className="channel-controls">
@@ -4069,7 +4304,7 @@ function App() {
                             </button>
                           </>
                         ) : (
-                          <p>{mp3Playlist[mp3CurrentIndex]?.lyricsLoading ? 'Memuat lirik...' : 'Memuat lagu...'}</p>
+                          <p>{mp3Playlist[mp3CurrentIndex]?.lyricsLoading ? 'Memuat lirik...' : (mp3LyricsStatus || 'Memuat lagu...')}</p>
                         )}
                       </div>
                     )}
@@ -4101,9 +4336,17 @@ function App() {
                 onPlay={() => { setMp3IsPlaying(true); setMp3TrackLoading(false); }}
                 onPause={() => setMp3IsPlaying(false)}
                 onError={() => {
-                  console.error('Audio load error:', mp3AudioRef.current?.error);
+                  const mediaErr = mp3AudioRef.current?.error;
+                  console.error('Audio load error:', mediaErr);
                   setMp3IsPlaying(false);
                   setMp3TrackLoading(false);
+                  const trackName = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : '';
+                  const errCode = mediaErr?.code;
+                  let errMsg = `Gagal memuat "${trackName}".`;
+                  if (errCode === 3) errMsg += ' File audio rusak atau encoding tidak didukung.';
+                  else if (errCode === 4) errMsg += ' Format file tidak didukung oleh browser.';
+                  else errMsg += ' Periksa apakah file MP3 valid.';
+                  setMp3LyricsStatus(errMsg);
                 }}
               />
             </div>

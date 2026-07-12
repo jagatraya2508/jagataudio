@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "797B-1A49-AF41-3FA0-0490-BC88-7284-F4F8",
+    "license_type": "3m",
+    "customer_name": "Movic",
+    "issued_date": "2026-07-10T09:51:36.425876",
+    "expiry_date": "2026-10-08T09:51:36.425876",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "hPQ+PAB5uzf6RLN2B97zEUs5x0ZmvWNrPp7PKfCEo5FbmOXXpD7U2v2Ifks96cXL0B+gzmZO/da2XKXUZIpexe0qvYEP9uLPLa688W4FKWOHvuiE+BQcTeTG7PBz9K8wvGoPMGPBRpmeMMgiZNf6I6oraa8AHjw70b84wir0qYFfKMD5jh8KLuXV+ga5KYNvbjyA6J3FV9XO5eBYD3m+WcGkFjPTW6URfseNMAuGqLk4WQvqJVaFxFiqoSulwXj+4QZbJPrDQwex6/Kj01UR02FLZ/KhpvNLSdtKCeccVmQzmAOlTMfzJiQf9CnrH8+oVI/9u23JydEXsZRt5LmY7g=="
+}

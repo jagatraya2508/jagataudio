@@ -625,6 +625,7 @@ async def get_stems(file_id: str, current_user: dict = Depends(get_current_user)
 class ProjectSettings(BaseModel):
     volumes: Dict[str, float] = {}
     mutes: Dict[str, bool] = {}
+    pans: Dict[str, float] = {}
     pitch: float = 0.0
     tempo: float = 1.0
     eq_low: float = 0.0
@@ -736,12 +737,15 @@ async def get_audio(file_id: str, stem_name: str):
 class MixParams(BaseModel):
     volumes: Dict[str, float]
     mutes: Dict[str, bool]
+    pans: Dict[str, float] = {}
     pitch: float
     tempo: float
     eq_low: float = 0.0    # -12 to 12 dB
     eq_mid: float = 0.0    # -12 to 12 dB
     eq_high: float = 0.0   # -12 to 12 dB
     compressor_enabled: bool = False
+    trim_start: float = 0.0
+    trim_end: Optional[float] = None
 
 @app.post("/export/{file_id}")
 async def export_mix(file_id: str, params: MixParams, current_user: dict = Depends(get_current_user)):
@@ -768,15 +772,38 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
     filters = []
     input_idx = 0
     
+    # Apply trim: add -ss and -t to each input for precise cutting
+    trim_start = params.trim_start
+    trim_end = params.trim_end
+    trim_input_args = []
+    if trim_start > 0:
+        trim_input_args.extend(["-ss", str(trim_start)])
+    if trim_end is not None and trim_end > trim_start:
+        trim_duration = trim_end - trim_start
+        trim_input_args.extend(["-t", str(trim_duration)])
+    
     instruments = ["vocals", "drums", "bass", "guitar", "piano", "other"]
     
     for inst in instruments:
         if not params.mutes.get(inst, False):
             stem_file = os.path.join(stem_dir, f"{inst}.mp3")
             if os.path.exists(stem_file):
+                # Apply trim args before each input file
+                command.extend(trim_input_args)
                 command.extend(["-i", stem_file])
                 vol = params.volumes.get(inst, 0)
-                filters.append(f"[{input_idx}:a]volume={vol}dB[a{input_idx}]")
+                pan_val = params.pans.get(inst, 0.0)  # -100 to 100
+                # Build per-stem filter: volume -> pan
+                stem_filter = f"[{input_idx}:a]volume={vol}dB"
+                if pan_val != 0:
+                    # Convert -100..100 to stereopan: L gain and R gain
+                    # pan=0 -> center (L=R=1), pan=-100 -> full left (L=1,R=0)
+                    pan_norm = max(-100, min(100, pan_val)) / 100.0  # -1 to 1
+                    l_gain = min(1.0, 1.0 - pan_norm)
+                    r_gain = min(1.0, 1.0 + pan_norm)
+                    stem_filter += f",pan=stereo|c0={l_gain:.3f}*c0+{l_gain:.3f}*c1|c1={r_gain:.3f}*c0+{r_gain:.3f}*c1"
+                stem_filter += f"[a{input_idx}]"
+                filters.append(stem_filter)
                 input_idx += 1
                 
     if input_idx == 0:
