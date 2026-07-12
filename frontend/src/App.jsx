@@ -265,9 +265,9 @@ function App() {
   const [isSearchingTab, setIsSearchingTab] = useState(false);
   const [searchResult, setSearchResult] = useState(null);
   // Auth State
-  const [token, setToken] = useState(localStorage.getItem('token') || null);
-  const [username, setUsername] = useState(localStorage.getItem('username') || null);
-  const [isAdmin, setIsAdmin] = useState(localStorage.getItem('isAdmin') === 'true');
+  const [token, setToken] = useState('portable-mode-token');
+  const [username, setUsername] = useState('admin');
+  const [isAdmin, setIsAdmin] = useState(true);
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   const [authError, setAuthError] = useState('');
@@ -2728,9 +2728,9 @@ function App() {
                 </button>
               )}
               <span className="welcome-text">Hai, {username}</span>
-              <button className="logout-btn" onClick={handleLogout}>
+              {/* <button className="logout-btn" onClick={handleLogout}>
                 <LogOut size={16} /> Keluar
-              </button>
+              </button> */}
             </div>
           )}
           <div>

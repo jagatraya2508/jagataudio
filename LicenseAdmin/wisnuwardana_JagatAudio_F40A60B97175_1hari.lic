@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F40A-60B9-7175-EB44-C702-D2FF-C6D9-0655",
+    "license_type": "1hari",
+    "customer_name": "wisnuwardana",
+    "issued_date": "2026-07-12T03:34:38.951805",
+    "expiry_date": "2026-07-13T03:34:38.951805",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "EF/0vMiVvrBLUVdf4AV2ugI+o5cHFPVnlr8UfBRVRSmFA6RqD0K3cfKHPJT0p1RndLsGXON2p2tK7pZRG9SA14i3WvsxiaHw+yKQCzeqS30SM4mXSCpo9lXFtI/RA/NHcLxEO6ny78iUg19c/+ZfPxC6Butsbiw5PK3L4IWyTQOrMqM0Vhlyq/6WgcLKZAHINqZmmiOi9vKIPJ8uyGjWOcuCgroN599lL+xCDIeweFzf+mtWwgUhi3FYk+WHiRhXscuf2pbSVI1lbdHtrjUc0p5LDuKDAL7jHD/vZQ4Wp9KmkQFu45rMjtOHK71CtYInlcuSpzOiPyoSwoa+2Sio9w=="
+}

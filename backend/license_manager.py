@@ -28,7 +28,8 @@ def get_license_dir():
     """Get the directory where license files are stored"""
     if getattr(os.sys, 'frozen', False):
         # Running as bundled exe (PyInstaller)
-        app_data = os.path.join(os.environ.get('APPDATA', ''), 'JagatAudio')
+        import sys
+        app_data = os.path.dirname(sys.executable)
     else:
         # Running in development
         app_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.license_data')
