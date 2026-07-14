@@ -1,11 +1,42 @@
+import os
+import sys
+
+# === SPLASH SCREEN FAST PATH ===
+if len(sys.argv) == 2 and sys.argv[1] == "--splash":
+    import tkinter as tk
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.attributes("-topmost", True)
+    window_width = 450
+    window_height = 200
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width // 2) - (window_width // 2)
+    y = (screen_height // 2) - (window_height // 2)
+    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+    root.configure(bg="#1e1e2e", highlightbackground="#cba6f7", highlightthickness=2)
+    tk.Label(root, text="Jagat Audio", font=("Arial", 28, "bold"), bg="#1e1e2e", fg="#cba6f7").pack(pady=(45, 10))
+    tk.Label(root, text="Sedang menyiapkan aplikasi, mohon tunggu...", font=("Arial", 11), bg="#1e1e2e", fg="#cdd6f4").pack()
+    root.after(15000, root.destroy) # Max timeout fallback
+    root.mainloop()
+    sys.exit(0)
+
+# Spawn splash screen early before heavy imports
+splash_proc = None
+if getattr(sys, 'frozen', False):
+    if not (len(sys.argv) >= 2 and sys.argv[1] in ["-m", "--splash"]):
+        import subprocess
+        try:
+            splash_proc = subprocess.Popen([sys.executable, "--splash"], creationflags=0x08000000)
+        except:
+            pass
+
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.base import BaseHTTPMiddleware
-import os
-import sys
 import multiprocessing
 import uuid
 import subprocess
@@ -1336,9 +1367,17 @@ if __name__ == "__main__":
 
         startup_mode = _prepare_bundled_startup()
         if startup_mode == "focus":
+            if splash_proc:
+                try:
+                    splash_proc.terminate()
+                except: pass
             webbrowser.open(APP_URL)
             sys.exit(0)
         if startup_mode == "blocked":
+            if splash_proc:
+                try:
+                    splash_proc.terminate()
+                except: pass
             _show_windows_message(
                 "Jagat Audio",
                 "Port 8000 masih dipakai aplikasi lain.\n"
@@ -1348,6 +1387,10 @@ if __name__ == "__main__":
             
         def open_browser():
             time.sleep(1.5) # Wait for uvicorn to start
+            if splash_proc:
+                try:
+                    splash_proc.terminate()
+                except: pass
             webbrowser.open(APP_URL)
             
         threading.Thread(target=open_browser, daemon=True).start()
