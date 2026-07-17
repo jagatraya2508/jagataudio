@@ -62,10 +62,21 @@ echo.
 echo [Step 3] Installing Python dependencies...
 pushd "%BACKEND_DIR%"
 pip install -r requirements.txt
-pip install pyinstaller
+pip install pyinstaller pyarmor
 popd
 echo.
 
+:: Step 3.5: Obfuscate with PyArmor (except main.py which exceeds trial limits)
+echo [Step 3.5] Obfuscating Python code with PyArmor...
+if exist "%BUILD_DIR%\obf_backend" rmdir /s /q "%BUILD_DIR%\obf_backend"
+mkdir "%BUILD_DIR%\obf_backend"
+pushd "%BACKEND_DIR%"
+call "%BACKEND_DIR%\venv\Scripts\activate.bat"
+pyarmor gen -O "%BUILD_DIR%\obf_backend" auth.py database.py license_manager.py lyrics_fetcher.py tab_generator.py tab_scraper.py version.py
+copy "main.py" "%BUILD_DIR%\obf_backend\main.py"
+popd
+echo   Obfuscation selesai.
+echo.
 :: Step 4: Run PyInstaller
 echo [Step 4] Bundling dengan PyInstaller...
 pushd "%BUILD_DIR%"

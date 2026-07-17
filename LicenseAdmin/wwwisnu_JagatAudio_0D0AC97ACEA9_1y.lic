@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "0D0A-C97A-CEA9-B0D6-C1CB-F806-6B24-749B",
+    "license_type": "1y",
+    "customer_name": "wwwisnu",
+    "issued_date": "2026-07-17T06:49:49.483694",
+    "expiry_date": "2027-07-17T06:49:49.483694",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "WcGDPQae7C4k8EQxBRlIUCest9HFjwN9NvHsE4UTh7koobjrv0qCE0xOqmpGN3PB19FhQDQ7OBbzAbhT2aIQbQgbdOrWQJFzUgMMppwzQwXkhWz57wQa8Z2xpKna3B8by++w+WhwsSVSnO+HQXDHz1GaoI8zcnsJ4889hp9Ej+E9Q4cOaHNN0DqC+3jcnc4W8xSow/e9nsxHxksu54eeb55AWea6qGnjF62RotLVrMoVFPrxrU/zN175OUY8UY+xkVhvggr2r4IjqNd2MTYlQcaYBAFXjEvcmaQ/rmubpM9HjAfAaJf2ZsWVzeslA+AwqSAo52+b8Vo9MdDfLeSNkg=="
+}

@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Video } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = `http://${window.location.hostname}:8000`;
+
+const isVideoFile = (name) => /\.(mp4|mov|avi|mkv|webm)$/i.test(name || '');
 
 const LRC_TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]/g;
 
@@ -209,6 +211,8 @@ function App() {
   const [stemCurrentTime, setStemCurrentTime] = useState(0);
   const [stemDuration, setStemDuration] = useState(0);
   const [stemTrackName, setStemTrackName] = useState('');
+  const [stemOriginalName, setStemOriginalName] = useState(null);
+  const stemVideoRef = useRef(null);
   const [stemLyrics, setStemLyrics] = useState(null);
   const [stemLyricsLoading, setStemLyricsLoading] = useState(false);
   const [stemLyricsStatus, setStemLyricsStatus] = useState('');
@@ -793,7 +797,7 @@ function App() {
 
   const loadPlaylistFromFiles = async (allFiles, folderName, dirHandle = null) => {
     const mp3Files = allFiles
-      .filter(f => f.name.toLowerCase().endsWith('.mp3'))
+      .filter(f => f.name.match(/\.(mp3|mp4|m4a|wav)$/i))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
     mp3PlaylistUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
@@ -805,7 +809,7 @@ function App() {
     }
 
     if (mp3Files.length === 0) {
-      alert('Tidak ada file MP3 di folder yang dipilih.');
+      alert('Tidak ada file Media (MP3/MP4/M4A/WAV) di folder yang dipilih.');
       return;
     }
 
@@ -823,7 +827,7 @@ function App() {
     const tracks = await Promise.all(mp3Files.map(async (file, i) => {
       const url = URL.createObjectURL(file);
       mp3PlaylistUrlsRef.current.push(url);
-      const baseName = file.name.replace(/\.mp3$/i, '');
+      const baseName = file.name.replace(/\.(mp3|mp4|m4a|wav)$/i, '');
       const baseKey = baseName.toLowerCase();
       let lyrics = null;
 
@@ -1981,7 +1985,22 @@ function App() {
   };
 
   const loadAudioStems = async (id, options = {}) => {
-    const { displayName = null, settings = null } = options;
+    let { displayName = null, originalName = null, settings = null } = options;
+    
+    if (!originalName) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/projects/${id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          originalName = data.original_name || null;
+        }
+      } catch (e) {
+        console.error("Failed to fetch project meta for originalName", e);
+      }
+    }
+    setStemOriginalName(originalName);
     try {
       await Tone.start();
 
@@ -2134,6 +2153,7 @@ function App() {
     skipSettingsSaveRef.current = true;
     await loadAudioStems(project.file_id, {
       displayName: project.display_name,
+      originalName: project.original_name,
       settings,
     });
     setTimeout(() => {
@@ -2187,13 +2207,16 @@ function App() {
         if (cur < trimStart || cur >= end) {
           Tone.Transport.seconds = trimStart;
           setStemCurrentTime(trimStart);
+          if (stemVideoRef.current) stemVideoRef.current.currentTime = trimStart;
         }
       }
       Tone.Transport.start();
       setIsPlaying(true);
+      if (stemVideoRef.current) stemVideoRef.current.play().catch(e => console.error("Video play error:", e));
     } else {
       Tone.Transport.pause();
       setIsPlaying(false);
+      if (stemVideoRef.current) stemVideoRef.current.pause();
     }
   };
 
@@ -2237,6 +2260,7 @@ function App() {
         p.playbackRate = val;
       }
     });
+    if (stemVideoRef.current) stemVideoRef.current.playbackRate = val;
   };
 
   const handleSeekStem = (e) => {
@@ -2244,6 +2268,7 @@ function App() {
     setStemCurrentTime(newTime);
     Tone.Transport.seconds = newTime;
     syncStemLyricsToTime(newTime);
+    if (stemVideoRef.current) stemVideoRef.current.currentTime = newTime;
   };
 
   // Audio Enhancer handlers
@@ -2297,6 +2322,7 @@ function App() {
           compressor_enabled: compressorEnabled,
           trim_start: trimEnabled ? trimStart : 0,
           trim_end: trimEnabled ? trimEnd : null,
+          export_video: activeTab === 'karaoke',
         })
       });
       
@@ -2580,6 +2606,12 @@ function App() {
             <Music size={18} /> Stem Separator
           </button>
           <button
+            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
+            onClick={() => setActiveTab('karaoke')}
+          >
+            <Video size={18} /> Video Karaoke
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
             onClick={() => setActiveTab('yt2mp3')}
           >
@@ -2618,6 +2650,12 @@ function App() {
             onClick={() => setActiveTab('stems')}
           >
             <Music size={18} /> Stem Separator
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
+            onClick={() => setActiveTab('karaoke')}
+          >
+            <Video size={18} /> Video Karaoke
           </button>
           <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
@@ -2712,7 +2750,7 @@ function App() {
   // RENDER: MAIN APP (Licensed)
   // ============================================
 
-  const isStudioFullPage = activeTab === 'stems' && status === 'ready';
+  const isStudioFullPage = (activeTab === 'stems' || activeTab === 'karaoke') && status === 'ready';
 
   return (
     <div className={`app-container${isStudioFullPage ? ' app-container--studio-full' : ''}`}>
@@ -2775,6 +2813,12 @@ function App() {
             onClick={() => setActiveTab('stems')}
           >
             <Music size={18} /> Stem Separator
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
+            onClick={() => setActiveTab('karaoke')}
+          >
+            <Video size={18} /> Video Karaoke
           </button>
           <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
@@ -2916,7 +2960,7 @@ function App() {
               </button>
             </p>
           </div>
-        ) : activeTab === 'stems' ? (
+        ) : (activeTab === 'stems' || activeTab === 'karaoke') ? (
           <>
             {status === 'idle' && (
           <div className="stem-home-layout">
@@ -2944,11 +2988,16 @@ function App() {
           <div className="upload-card">
             <div className="upload-area">
               <Upload size={48} className="upload-icon" />
-              <h3>Unggah Lagu Anda</h3>
-              <p>Format MP3 didukung. File akan diproses dengan AI Demucs.</p>
+              <h3>Unggah {activeTab === 'karaoke' ? 'Video Karaoke' : 'Lagu Anda'}</h3>
+              <p>Format {activeTab === 'karaoke' ? 'Video (MP4)' : 'MP3 dan WAV'} didukung. File akan diproses dengan AI Demucs.</p>
               <label className="upload-btn">
                 Pilih File
-                <input type="file" accept="audio/mp3,audio/wav" onChange={handleFileSelect} hidden />
+                <input 
+                  type="file" 
+                  accept={activeTab === 'karaoke' ? "video/mp4,video/quicktime,video/x-msvideo,video/webm" : "audio/mp3,audio/wav"} 
+                  onChange={handleFileSelect} 
+                  hidden 
+                />
               </label>
             </div>
           </div>
@@ -2975,7 +3024,9 @@ function App() {
               </div>
             ) : (
               <ul className="saved-projects-list">
-                {savedProjects.map((project) => (
+                {savedProjects
+                  .filter((project) => activeTab === 'karaoke' ? isVideoFile(project.original_name) : !isVideoFile(project.original_name))
+                  .map((project) => (
                   <li key={project.file_id} className="saved-project-item">
                     {editingProjectNameId === project.file_id ? (
                       <form
@@ -3058,13 +3109,26 @@ function App() {
             </div>
 
             <div className="original-player">
-              <audio
-                ref={originalAudioRef}
-                src={originalUrl}
-                onTimeUpdate={() => setAudioCurrentTime(originalAudioRef.current?.currentTime || 0)}
-                onLoadedMetadata={() => setAudioDuration(originalAudioRef.current?.duration || 0)}
-                onEnded={() => setOriginalPlaying(false)}
-              />
+              {isVideoFile(file?.name) ? (
+                <div style={{ marginBottom: '1rem', textAlign: 'center' }}>
+                  <video
+                    ref={originalAudioRef}
+                    src={originalUrl}
+                    onTimeUpdate={() => setAudioCurrentTime(originalAudioRef.current?.currentTime || 0)}
+                    onLoadedMetadata={() => setAudioDuration(originalAudioRef.current?.duration || 0)}
+                    onEnded={() => setOriginalPlaying(false)}
+                    style={{ width: '100%', maxHeight: '300px', borderRadius: '12px', backgroundColor: '#000' }}
+                  />
+                </div>
+              ) : (
+                <audio
+                  ref={originalAudioRef}
+                  src={originalUrl}
+                  onTimeUpdate={() => setAudioCurrentTime(originalAudioRef.current?.currentTime || 0)}
+                  onLoadedMetadata={() => setAudioDuration(originalAudioRef.current?.duration || 0)}
+                  onEnded={() => setOriginalPlaying(false)}
+                />
+              )}
               
               <button 
                 className="original-play-btn" 
@@ -3210,6 +3274,17 @@ function App() {
         {status === 'ready' && (
           <div className="stem-studio-layout">
           <div className="studio-container">
+            {stemOriginalName && /\.(mp4|mov|avi|mkv|webm)$/i.test(stemOriginalName) && (
+              <div className="video-container glass-panel" style={{ marginBottom: '1.5rem', textAlign: 'center', padding: '1rem' }}>
+                <video 
+                  ref={stemVideoRef} 
+                  src={`${API_BASE_URL}/media/${fileId}`} 
+                  muted 
+                  playsInline
+                  style={{ width: '100%', maxHeight: '400px', borderRadius: '12px', backgroundColor: '#000' }}
+                />
+              </div>
+            )}
             <div className="master-controls glass-panel">
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -3219,7 +3294,7 @@ function App() {
                     </button>
                     <button className="process-btn" onClick={exportMix} disabled={isExporting} style={{ padding: '0.8rem 1.5rem', borderRadius: '12px' }}>
                       {isExporting ? <Loader2 size={20} className="spinner" /> : <Download size={20} />}
-                      <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : 'Export MP3'}</span>
+                      <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : (activeTab === 'karaoke' ? 'Export MP4' : 'Export MP3')}</span>
                     </button>
                     <button 
                       className={`process-btn trim-toggle-btn ${trimEnabled ? 'active' : ''}`}
@@ -3923,14 +3998,14 @@ function App() {
               <div className="mp3-playlist-header">
                 <ListMusic size={40} className="yt-icon" />
                 <div>
-                  <h3>MP3 Playlist</h3>
-                  <p>Pilih folder berisi file MP3, buat playlist, lalu putar.</p>
+                  <h3>Media Playlist (MP3 & MP4)</h3>
+                  <p>Pilih folder berisi file media, buat playlist, lalu putar.</p>
                 </div>
               </div>
 
               <div className="mp3-folder-info glass-panel">
-                <p><strong>Catatan:</strong> Saat memilih folder, Windows/Chrome <em>tidak menampilkan file MP3</em> di dialog — itu normal.</p>
-                <p>Buka folder tempat MP3 Anda berada (misalnya <code>Downloads\01</code>), lalu klik <strong>Select Folder</strong>. Daftar lagu akan muncul di aplikasi setelah folder dipilih.</p>
+                <p><strong>Catatan:</strong> Saat memilih folder, Windows/Chrome <em>tidak menampilkan file media</em> di dialog — itu normal.</p>
+                <p>Buka folder tempat file media Anda berada (misalnya <code>Downloads\01</code>), lalu klik <strong>Select Folder</strong>. Daftar lagu/video akan muncul di aplikasi setelah folder dipilih.</p>
               </div>
 
               <input
@@ -3944,7 +4019,7 @@ function App() {
 
               <div className="mp3-playlist-actions">
                 <button className="process-btn" onClick={pickMp3Folder}>
-                  <FolderOpen size={18} /> Pilih Folder MP3
+                  <FolderOpen size={18} /> Pilih Folder Media
                 </button>
                 {mp3Playlist.length > 0 && (
                   <button className="cancel-btn" onClick={clearMp3Playlist}>
@@ -3967,6 +4042,40 @@ function App() {
               {mp3Playlist.length > 0 && (
                 <div className="mp3-playlist-layout">
                   <div className="mp3-playlist-side">
+                    <video
+                      ref={mp3AudioRef}
+                      preload="metadata"
+                      className={`media-video-player ${mp3Playlist[mp3CurrentIndex]?.fileName?.match(/\.mp4$/i) ? 'visible' : 'hidden'}`}
+                      onTimeUpdate={handleMp3TimeUpdate}
+                      onLoadedMetadata={() => {
+                        const dur = mp3AudioRef.current?.duration || 0;
+                        setMp3Duration(dur);
+                        if (mp3CurrentIndex >= 0 && dur > 0) {
+                          const track = mp3Playlist[mp3CurrentIndex];
+                          if (track?.lyricsNotFound && mp3RetriedLyricsRef.current !== mp3CurrentIndex) {
+                            mp3RetriedLyricsRef.current = mp3CurrentIndex;
+                            fetchLyricsForTrack(mp3CurrentIndex, dur);
+                          }
+                        }
+                      }}
+                      onEnded={playMp3Next}
+                      onPlay={() => { setMp3IsPlaying(true); setMp3TrackLoading(false); }}
+                      onPause={() => setMp3IsPlaying(false)}
+                      onError={() => {
+                        const mediaErr = mp3AudioRef.current?.error;
+                        console.error('Media load error:', mediaErr);
+                        setMp3IsPlaying(false);
+                        setMp3TrackLoading(false);
+                        const trackName = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : '';
+                        const errCode = mediaErr?.code;
+                        let errMsg = `Gagal memuat "${trackName}".`;
+                        if (errCode === 3) errMsg += ' File media rusak atau encoding tidak didukung.';
+                        else if (errCode === 4) errMsg += ' Format file tidak didukung oleh browser.';
+                        else errMsg += ' Periksa apakah file media valid.';
+                        setMp3LyricsStatus(errMsg);
+                      }}
+                    />
+
                     <div className="mp3-player-controls">
                       <button className="mp3-nav-btn" onClick={playMp3Prev} title="Sebelumnya">
                         <SkipBack size={20} />
@@ -4317,38 +4426,7 @@ function App() {
                 </div>
               )}
 
-              <audio
-                ref={mp3AudioRef}
-                preload="metadata"
-                onTimeUpdate={handleMp3TimeUpdate}
-                onLoadedMetadata={() => {
-                  const dur = mp3AudioRef.current?.duration || 0;
-                  setMp3Duration(dur);
-                  if (mp3CurrentIndex >= 0 && dur > 0) {
-                    const track = mp3Playlist[mp3CurrentIndex];
-                    if (track?.lyricsNotFound && mp3RetriedLyricsRef.current !== mp3CurrentIndex) {
-                      mp3RetriedLyricsRef.current = mp3CurrentIndex;
-                      fetchLyricsForTrack(mp3CurrentIndex, dur);
-                    }
-                  }
-                }}
-                onEnded={playMp3Next}
-                onPlay={() => { setMp3IsPlaying(true); setMp3TrackLoading(false); }}
-                onPause={() => setMp3IsPlaying(false)}
-                onError={() => {
-                  const mediaErr = mp3AudioRef.current?.error;
-                  console.error('Audio load error:', mediaErr);
-                  setMp3IsPlaying(false);
-                  setMp3TrackLoading(false);
-                  const trackName = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : '';
-                  const errCode = mediaErr?.code;
-                  let errMsg = `Gagal memuat "${trackName}".`;
-                  if (errCode === 3) errMsg += ' File audio rusak atau encoding tidak didukung.';
-                  else if (errCode === 4) errMsg += ' Format file tidak didukung oleh browser.';
-                  else errMsg += ' Periksa apakah file MP3 valid.';
-                  setMp3LyricsStatus(errMsg);
-                }}
-              />
+
             </div>
           </div>
         ) : null}

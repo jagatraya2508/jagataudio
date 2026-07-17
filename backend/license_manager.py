@@ -79,12 +79,12 @@ def _get_cpu_id():
         print(f"[License] Warning: Could not get CPU ID: {e}")
     return "UNKNOWN_CPU"
 
-def _get_disk_serial():
-    """Get disk serial number"""
+def _get_system_uuid():
+    """Get System UUID (Motherboard/BIOS level)"""
     try:
         if platform.system() == 'Windows':
             result = subprocess.run(
-                ['wmic', 'diskdrive', 'get', 'SerialNumber'],
+                ['wmic', 'csproduct', 'get', 'uuid'],
                 capture_output=True, text=True, timeout=10,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
@@ -92,40 +92,55 @@ def _get_disk_serial():
             if len(lines) >= 2:
                 return lines[1]
         elif platform.system() == 'Linux':
-            # Try to get serial from /sys
-            for disk in ['sda', 'nvme0n1', 'vda']:
-                serial_path = f'/sys/block/{disk}/device/serial'
-                if os.path.exists(serial_path):
-                    with open(serial_path, 'r') as f:
-                        return f.read().strip()
+            if os.path.exists('/sys/class/dmi/id/product_uuid'):
+                with open('/sys/class/dmi/id/product_uuid', 'r') as f:
+                    return f.read().strip()
+        elif platform.system() == 'Darwin':
+            result = subprocess.run(
+                ['system_profiler', 'SPHardwareDataType'],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in result.stdout.split('\n'):
+                if 'UUID' in line:
+                    return line.split(':')[1].strip()
     except Exception as e:
-        print(f"[License] Warning: Could not get disk serial: {e}")
-    return "UNKNOWN_DISK"
+        print(f"[License] Warning: Could not get System UUID: {e}")
+    return "UNKNOWN_UUID"
 
-def _get_mac_address():
-    """Get primary MAC address"""
+def _get_baseboard_serial():
+    """Get Motherboard/Baseboard Serial Number"""
     try:
-        mac = uuid.getnode()
-        mac_str = ':'.join(f'{(mac >> (8 * i)) & 0xff:02x}' for i in reversed(range(6)))
-        return mac_str
+        if platform.system() == 'Windows':
+            result = subprocess.run(
+                ['wmic', 'baseboard', 'get', 'serialnumber'],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+            if len(lines) >= 2:
+                return lines[1]
+        elif platform.system() == 'Linux':
+            if os.path.exists('/sys/class/dmi/id/board_serial'):
+                with open('/sys/class/dmi/id/board_serial', 'r') as f:
+                    return f.read().strip()
     except Exception as e:
-        print(f"[License] Warning: Could not get MAC address: {e}")
-    return "UNKNOWN_MAC"
+        print(f"[License] Warning: Could not get Baseboard Serial: {e}")
+    return "UNKNOWN_BOARD"
 
 def get_hardware_id():
     """
     Generate a unique hardware fingerprint by combining:
     - CPU Processor ID
-    - Disk Serial Number
-    - MAC Address
+    - System UUID
+    - Baseboard Serial Number
     Returns a SHA-256 hash of the combined hardware info.
     """
     cpu_id = _get_cpu_id()
-    disk_serial = _get_disk_serial()
-    mac_addr = _get_mac_address()
+    sys_uuid = _get_system_uuid()
+    board_serial = _get_baseboard_serial()
     
     # Combine all hardware identifiers
-    combined = f"JAGAT|{cpu_id}|{disk_serial}|{mac_addr}"
+    combined = f"JAGAT|{cpu_id}|{sys_uuid}|{board_serial}"
     
     # Hash to create a fixed-length, clean identifier
     hardware_hash = hashlib.sha256(combined.encode('utf-8')).hexdigest().upper()

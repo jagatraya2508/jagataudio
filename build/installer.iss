@@ -1,5 +1,5 @@
 #define MyAppName "JagatAudio"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "JagatAudio"
 #define MyAppId "{A7B3C9D1-4E2F-5A6B-8C9D-0E1F2A3B4C5D}"
 

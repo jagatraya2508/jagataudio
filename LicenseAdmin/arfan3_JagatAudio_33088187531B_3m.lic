@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "3308-8187-531B-3ADE-AB81-AE23-823C-A525",
+    "license_type": "3m",
+    "customer_name": "arfan3",
+    "issued_date": "2026-07-15T07:08:35.056645",
+    "expiry_date": "2026-10-13T07:08:35.056645",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "b6DHjj+Ge+1kNgO8mPVl5bvqImCsFMQn9IFYs5JGZeKu30AaP86p43EuEEkhaPX942IfM2vR8+c6pZe9jVyMIwuDLIhiLKIKRQuVEhPZ9hW9OM5nostXAMUBzrNc21M4zKVs74aBVKDaLMzKDSvzGu2IBZ56IA52QyqqXllbQaAA2ZbeyIFkM6jMQzeAoW8ICGmOtBJDb0L1r3Vtq/R0eSqyKFDHv2BpsaOvl1vAqaIV5AVAx25rh8hLv69XIVu5HdHuhEcHfLp2WkxjdKINe06Qb2xH3L502R8Qoq7yw6sjtmRmMDiXC7kesv2Ab+ViRlN7BF5jHSchLUQTWfQ48g=="
+}

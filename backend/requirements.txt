@@ -8,3 +8,6 @@ bcrypt
 PyJWT
 yt-dlp
 cryptography
+cloudscraper
+beautifulsoup4
+requests

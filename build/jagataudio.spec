@@ -18,9 +18,10 @@ import sys
 block_cipher = None
 
 # Paths
-BACKEND_DIR = os.path.join(SPECPATH, '..', 'backend')
+ORIG_BACKEND_DIR = os.path.join(SPECPATH, '..', 'backend')
+BACKEND_DIR = os.path.join(SPECPATH, 'obf_backend')
 FRONTEND_DIST = os.path.join(SPECPATH, '..', 'frontend', 'dist')
-KEYS_DIR = os.path.join(BACKEND_DIR, 'keys')
+KEYS_DIR = os.path.join(ORIG_BACKEND_DIR, 'keys')
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -39,7 +40,9 @@ hidden_imports = [
     'starlette.routing', 'starlette.responses', 'pydantic',
     'passlib', 'passlib.handlers', 'passlib.handlers.bcrypt', 'bcrypt', 'jwt',
     'cryptography', 'multipart', 'python_multipart', 'sqlite3',
+    'cloudscraper', 'bs4', 'requests',
     'auth', 'database', 'tab_generator', 'license_manager', 'lyrics_fetcher', 'version',
+    'pyarmor_runtime_000000',
     # ML Libraries
     'basic_pitch', 'basic_pitch.inference', 'basic_pitch.models',
     'mido', 'demucs', 'demucs.api', 'demucs.apply', 'demucs.pretrained', 'demucs.htdemucs',
@@ -52,6 +55,8 @@ hidden_imports += collect_submodules('yt_dlp')
 hidden_imports += collect_submodules('basic_pitch')
 hidden_imports += collect_submodules('demucs')
 hidden_imports += collect_submodules('torchaudio')
+hidden_imports += collect_submodules('passlib')
+hidden_imports += collect_submodules('cryptography')
 
 # Frontend static build
 if os.path.exists(FRONTEND_DIST):
@@ -73,7 +78,7 @@ if os.path.exists(FFPROBE_PATH):
 
 a = Analysis(
     [os.path.join(BACKEND_DIR, 'main.py')],
-    pathex=[BACKEND_DIR],
+    pathex=[BACKEND_DIR, ORIG_BACKEND_DIR],
     binaries=[],
     datas=datas,
     hiddenimports=hidden_imports,
