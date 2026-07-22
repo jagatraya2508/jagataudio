@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "ED82-980E-E249-5AD6-2596-E047-01AE-8798",
+    "license_type": "2m",
+    "customer_name": "Kuyung",
+    "issued_date": "2026-07-22T06:35:21.825810",
+    "expiry_date": "2026-09-20T06:35:21.825810",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "jn46MxpsxBPo0kW+bqvVadgHyfdeM54RWUOOOuZ8+703g0Xw+He3gKCuyT0BTtNQfmvUOczRwLcOwZsaIDGZG+9w/8v2zfIqSrd9nJwceDuDS60Iho6TBJZX7H5d3r+jzH3oN1bzNBR/IE/P1wt71v8eMdblQcdaDLeZ85aC3antlulEpSVtx290SVueuaZ5+Sl9pVKd4IrUbtFyXGqzE8tSt8WmnVJho9tPGsugg3QVUT+sk4pFgNil/lKzor1vpMk5e75I5BEBTMkHYe5OrI7Lm86Ae+VeBILhORm6y8jaNWfO7Q/rfNzgqDzuERcVqacJENM8gJF8kSAGUDcDpw=="
+}

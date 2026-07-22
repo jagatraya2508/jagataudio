@@ -1,11 +1,22 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Video } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle } from 'lucide-react';
 import './index.css';
 
 const API_BASE_URL = `http://${window.location.hostname}:8000`;
 
 const isVideoFile = (name) => /\.(mp4|mov|avi|mkv|webm)$/i.test(name || '');
+
+/** Standard 10-band graphic EQ center frequencies (Hz) */
+const EQ_BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+const EQ_BAND_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
+const flatEqBands = () => EQ_BAND_FREQS.map(() => 0);
+
+/** Larger grains = smoother pitch on chords/polyphony (slightly more smear). */
+const grainSizeForPitch = (semitones) => Math.min(0.28, 0.16 + Math.abs(semitones) * 0.012);
+const GRAIN_OVERLAP = 0.1;
+/** GrainPlayer at pitch=0 causes volume pumping; use normal Player unless pitch-shifted. */
+const needsGrainPitch = (semitones) => Math.abs(Number(semitones) || 0) >= 0.5;
 
 const LRC_TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]/g;
 
@@ -193,7 +204,7 @@ const INSTRUMENTS = [
 
 function App() {
   // Tab navigation
-  const [activeTab, setActiveTab] = useState('stems'); // 'stems' or 'karaoke'
+  const [activeTab, setActiveTab] = useState('stems'); // 'stems' | 'yt2mp3' | 'playlist'
 
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState('idle'); // idle, selected, uploading, processing, ready, error
@@ -236,8 +247,20 @@ function App() {
   const [eqLow, setEqLow] = useState(0);   // -12 to 12 dB
   const [eqMid, setEqMid] = useState(0);   // -12 to 12 dB
   const [eqHigh, setEqHigh] = useState(0);  // -12 to 12 dB
+  const [eqBands, setEqBands] = useState(flatEqBands); // 10-band graphic EQ (-12..12 dB)
   const [compressorEnabled, setCompressorEnabled] = useState(false);
-  const [masterVolume, setMasterVolume] = useState(0); // -60 to 6 dB
+  const [limiterEnabled, setLimiterEnabled] = useState(true);
+  const [normalizeEnabled, setNormalizeEnabled] = useState(true);
+  const [denoiseEnabled, setDenoiseEnabled] = useState(false);
+  const [reverbEnabled, setReverbEnabled] = useState(false);
+  const [delayEnabled, setDelayEnabled] = useState(false);
+  const [masterVolume, setMasterVolume] = useState(0); // -60 to 12 dB
+  const STEM_MAKEUP_DB = 6; // compensates quieter Demucs stems when Normalize ON
+  const REVERB_WET = 0.22;
+  const DELAY_WET = 0.16;
+  const MIC_ECHO_TIME = 0.22;
+  const MIC_ECHO_FEEDBACK = 0.28;
+  const MIC_ECHO_WET_MAX = 0.45;
   
   // Audio Trimming state
   const [trimEnabled, setTrimEnabled] = useState(false);
@@ -252,6 +275,20 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [eta, setEta] = useState('');
   const [isExporting, setIsExporting] = useState(false);
+
+  // Karaoke mic recording
+  const [micReady, setMicReady] = useState(false);
+  const [micError, setMicError] = useState('');
+  const [micVolume, setMicVolume] = useState(0); // dB
+  const [micEchoEnabled, setMicEchoEnabled] = useState(false);
+  const [micEchoAmount, setMicEchoAmount] = useState(35); // 0–100% wet
+  const [isRecordingKaraoke, setIsRecordingKaraoke] = useState(false);
+  const [recordedKaraokeUrl, setRecordedKaraokeUrl] = useState(null);
+  const [recordedKaraokeName, setRecordedKaraokeName] = useState('');
+  const [isSavingRecording, setIsSavingRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  // Delay musik ke file rekaman agar sejajar dengan latency mic (ms)
+  const [recordLatencyMs, setRecordLatencyMs] = useState(120);
 
   const [savedProjects, setSavedProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -439,6 +476,7 @@ function App() {
   const [licenseMessageType, setLicenseMessageType] = useState(''); // 'success', 'error', 'warning'
   const [isActivating, setIsActivating] = useState(false);
   const [hwidCopied, setHwidCopied] = useState(false);
+  const [showLicenseDetails, setShowLicenseDetails] = useState(false);
   // YouTube Audio refs
   const ytAudioRef = useRef(null);
   const ytAudioContextRef = useRef(null);
@@ -451,9 +489,25 @@ function App() {
   const volumeNodesRef = useRef({});
   const pannerNodesRef = useRef({});
   const masterEqRef = useRef(null);
+  const masterEqBandsRef = useRef([]);
+  const masterDenoiseHpRef = useRef(null);
+  const masterDenoiseLpRef = useRef(null);
   const masterCompressorRef = useRef(null);
   const masterPitchShiftRef = useRef(null);
+  const masterDelayRef = useRef(null);
+  const masterReverbRef = useRef(null);
+  const masterMakeupRef = useRef(null);
   const masterLimiterRef = useRef(null);
+  const masterOutRef = useRef(null);
+  const recordDestRef = useRef(null);
+  const recordCompDelayRef = useRef(null);
+  const micRef = useRef(null);
+  const micVolRef = useRef(null);
+  const micEchoRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
+  const recordedBlobRef = useRef(null);
   const ytAnimFrameRef = useRef(null);
   const originalAudioRef = useRef(null);
 
@@ -865,26 +919,77 @@ function App() {
     setMp3TrackLoading(false);
   };
 
-  const collectFilesFromDirectory = async (dirHandle) => {
+  const SKIP_DIR_NAMES = new Set([
+    'node_modules', '.git', '.svn', '__pycache__', '$recycle.bin',
+    'system volume information', 'windows', 'appdata', 'application data',
+  ]);
+
+  const collectFilesFromDirectory = async (dirHandle, depth = 0) => {
     const files = [];
-    for await (const entry of dirHandle.values()) {
-      if (entry.kind === 'file') {
-        files.push(await entry.getFile());
-      } else if (entry.kind === 'directory') {
-        files.push(...await collectFilesFromDirectory(entry));
+    // Batasi kedalaman agar scan Downloads besar tidak hang
+    const maxDepth = 4;
+    try {
+      for await (const entry of dirHandle.values()) {
+        try {
+          if (entry.kind === 'file') {
+            files.push(await entry.getFile());
+          } else if (entry.kind === 'directory' && depth < maxDepth) {
+            const name = (entry.name || '').toLowerCase();
+            if (name.startsWith('.') || SKIP_DIR_NAMES.has(name)) continue;
+            files.push(...await collectFilesFromDirectory(entry, depth + 1));
+          }
+        } catch (entryErr) {
+          // File cloud/placeholder atau izin terbatas — lanjut entri lain
+          console.warn('Skip entry:', entry?.name, entryErr);
+        }
       }
+    } catch (e) {
+      console.warn('Scan folder gagal sebagian:', dirHandle?.name, e);
     }
     return files;
+  };
+
+  const ensureFolderWritable = async (dirHandle) => {
+    if (!dirHandle) return false;
+    try {
+      const opts = { mode: 'readwrite' };
+      if ((await dirHandle.queryPermission(opts)) === 'granted') return true;
+      if ((await dirHandle.requestPermission(opts)) === 'granted') return true;
+    } catch (e) {
+      console.warn('Folder tidak bisa ditulis (lirik hanya bisa diunduh):', e);
+    }
+    return false;
   };
 
   const pickMp3Folder = async () => {
     if ('showDirectoryPicker' in window) {
       try {
-        const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        // mode 'read' dulu — Downloads sering ditolak jika langsung readwrite
+        const handle = await window.showDirectoryPicker({ mode: 'read' });
+        setMp3LyricsStatus('Memindai folder media...');
         const allFiles = await collectFilesFromDirectory(handle);
+        const mediaCount = allFiles.filter((f) => f.name.match(/\.(mp3|mp4|m4a|wav)$/i)).length;
+        if (mediaCount === 0) {
+          setMp3LyricsStatus('');
+          alert(
+            'Tidak ada file Media (MP3/MP4/M4A/WAV) di folder ini (termasuk subfolder).\n\n' +
+            'Tips: pastikan file ada di folder yang dipilih, bukan hanya di shortcut/cloud yang belum diunduh.'
+          );
+          return;
+        }
+        const writable = await ensureFolderWritable(handle);
         await loadPlaylistFromFiles(allFiles, handle.name, handle);
+        setMp3FolderWritable(writable);
+        if (!writable) {
+          setMp3LyricsStatus('Playlist siap. Folder ini tidak bisa ditulis — lirik bisa diunduh manual.');
+        } else {
+          setMp3LyricsStatus('');
+        }
       } catch (e) {
-        if (e.name !== 'AbortError') console.error(e);
+        if (e.name === 'AbortError') return;
+        console.error(e);
+        alert('Gagal membaca folder: ' + (e.message || e.name || 'unknown') +
+          '\n\nCoba pilih folder lagi, atau pilih subfolder yang berisi file media.');
       }
       return;
     }
@@ -1139,13 +1244,52 @@ function App() {
     playMp3Track(prev);
   };
 
+  const disposeMic = () => {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    } catch { /* ignore */ }
+    mediaRecorderRef.current = null;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    try { micRef.current?.close(); } catch { /* ignore */ }
+    try { micRef.current?.disconnect(); } catch { /* ignore */ }
+    try { micRef.current?.dispose(); } catch { /* ignore */ }
+    try { micEchoRef.current?.dispose(); } catch { /* ignore */ }
+    try { micVolRef.current?.dispose(); } catch { /* ignore */ }
+    micRef.current = null;
+    micEchoRef.current = null;
+    micVolRef.current = null;
+    setMicReady(false);
+    setIsRecordingKaraoke(false);
+  };
+
+  const disposeMasterChain = () => {
+    disposeMic();
+    if (masterEqRef.current) { masterEqRef.current.dispose(); masterEqRef.current = null; }
+    masterEqBandsRef.current.forEach((f) => { try { f.dispose(); } catch { /* ignore */ } });
+    masterEqBandsRef.current = [];
+    if (masterDenoiseHpRef.current) { masterDenoiseHpRef.current.dispose(); masterDenoiseHpRef.current = null; }
+    if (masterDenoiseLpRef.current) { masterDenoiseLpRef.current.dispose(); masterDenoiseLpRef.current = null; }
+    if (masterCompressorRef.current) { masterCompressorRef.current.dispose(); masterCompressorRef.current = null; }
+    masterPitchShiftRef.current = null; // pitch now via GrainPlayer.detune (no master PitchShift)
+    if (masterDelayRef.current) { masterDelayRef.current.dispose(); masterDelayRef.current = null; }
+    if (masterReverbRef.current) { masterReverbRef.current.dispose(); masterReverbRef.current = null; }
+    if (masterMakeupRef.current) { masterMakeupRef.current.dispose(); masterMakeupRef.current = null; }
+    if (masterLimiterRef.current) { masterLimiterRef.current.dispose(); masterLimiterRef.current = null; }
+    if (recordCompDelayRef.current) { recordCompDelayRef.current.dispose(); recordCompDelayRef.current = null; }
+    if (masterOutRef.current) { masterOutRef.current.dispose(); masterOutRef.current = null; }
+    recordDestRef.current = null;
+  };
+
   useEffect(() => {
     return () => {
       Object.values(playersRef.current).forEach(p => p.dispose());
       Object.values(volumeNodesRef.current).forEach(v => v.dispose());
-      if (masterEqRef.current) masterEqRef.current.dispose();
-      if (masterCompressorRef.current) masterCompressorRef.current.dispose();
-      if (masterLimiterRef.current) masterLimiterRef.current.dispose();
+      disposeMasterChain();
     };
   }, []);
 
@@ -1231,7 +1375,22 @@ function App() {
   };
 
   const formatLicenseType = (type) => {
-    const map = { '3m': '3 Bulan', '6m': '6 Bulan', '1y': '1 Tahun', '3bulan': '3 Bulan', '6bulan': '6 Bulan', '1tahun': '1 Tahun' };
+    const map = {
+      '1hari': '1 Hari',
+      '1minggu': '1 Minggu',
+      '7hari': '1 Minggu',
+      '14hari': '14 Hari',
+      '1m': '1 Bulan',
+      '1bulan': '1 Bulan',
+      '2m': '2 Bulan',
+      '2bulan': '2 Bulan',
+      '3m': '3 Bulan',
+      '6m': '6 Bulan',
+      '1y': '1 Tahun',
+      '3bulan': '3 Bulan',
+      '6bulan': '6 Bulan',
+      '1tahun': '1 Tahun',
+    };
     return map[type] || type;
   };
 
@@ -1856,9 +2015,9 @@ function App() {
     setPitch(nextPitch);
     setTempo(nextTempo);
     Object.values(playersRef.current).forEach((p) => {
-      if (p?.detune !== undefined) p.detune = nextPitch * 100;
       if (p?.playbackRate !== undefined) p.playbackRate = nextTempo;
     });
+    rebuildStemPlayersForPitch(nextPitch);
 
     const low = settings.eq_low ?? 0;
     const mid = settings.eq_mid ?? 0;
@@ -1872,11 +2031,52 @@ function App() {
       masterEqRef.current.high.value = high;
     }
 
+    const bandsRaw = Array.isArray(settings.eq_bands) ? settings.eq_bands : [];
+    const bands = EQ_BAND_FREQS.map((_, i) => {
+      const v = Number(bandsRaw[i]);
+      return Number.isFinite(v) ? Math.max(-12, Math.min(12, v)) : 0;
+    });
+    setEqBands(bands);
+    masterEqBandsRef.current.forEach((f, i) => {
+      if (f?.gain) f.gain.value = bands[i] ?? 0;
+    });
+
     const comp = !!settings.compressor_enabled;
     setCompressorEnabled(comp);
     if (masterCompressorRef.current) {
       masterCompressorRef.current.threshold.value = comp ? -15 : 0;
       masterCompressorRef.current.ratio.value = comp ? 2.5 : 1;
+    }
+
+    const lim = settings.limiter_enabled !== false;
+    setLimiterEnabled(lim);
+    if (masterLimiterRef.current) {
+      masterLimiterRef.current.threshold.value = lim ? -1 : 0;
+    }
+
+    const norm = settings.normalize_enabled !== false;
+    setNormalizeEnabled(norm);
+    if (masterMakeupRef.current) {
+      masterMakeupRef.current.volume.value = norm ? STEM_MAKEUP_DB : 0;
+    }
+
+    const denoise = !!settings.denoise_enabled;
+    setDenoiseEnabled(denoise);
+    if (masterDenoiseHpRef.current && masterDenoiseLpRef.current) {
+      masterDenoiseHpRef.current.frequency.value = denoise ? 90 : 20;
+      masterDenoiseLpRef.current.frequency.value = denoise ? 12000 : 20000;
+    }
+
+    const reverbOn = !!settings.reverb_enabled;
+    setReverbEnabled(reverbOn);
+    if (masterReverbRef.current) {
+      masterReverbRef.current.wet.value = reverbOn ? REVERB_WET : 0;
+    }
+
+    const delayOn = !!settings.delay_enabled;
+    setDelayEnabled(delayOn);
+    if (masterDelayRef.current) {
+      masterDelayRef.current.wet.value = delayOn ? DELAY_WET : 0;
     }
 
     const mVol = settings.master_volume ?? 0;
@@ -1930,8 +2130,14 @@ function App() {
           eq_low: eqLow,
           eq_mid: eqMid,
           eq_high: eqHigh,
+          eq_bands: eqBands,
           compressor_enabled: compressorEnabled,
           master_volume: masterVolume,
+          limiter_enabled: limiterEnabled,
+          normalize_enabled: normalizeEnabled,
+          denoise_enabled: denoiseEnabled,
+          reverb_enabled: reverbEnabled,
+          delay_enabled: delayEnabled,
           stem_lyrics_offset_ms: stemLyricsOffsetMs,
           stem_lyrics_speed_pct: stemLyricsSpeedPct,
         }),
@@ -1941,7 +2147,9 @@ function App() {
     }
   }, [
     fileId, token, status, volumes, mutes, pans, pitch, tempo,
-    eqLow, eqMid, eqHigh, compressorEnabled, masterVolume, stemLyricsOffsetMs, stemLyricsSpeedPct,
+    eqLow, eqMid, eqHigh, eqBands, compressorEnabled, masterVolume, limiterEnabled, normalizeEnabled,
+    denoiseEnabled, reverbEnabled, delayEnabled,
+    stemLyricsOffsetMs, stemLyricsSpeedPct,
   ]);
 
   const resetStemStudio = (homeMode = 'upload') => {
@@ -1951,18 +2159,7 @@ function App() {
     Object.values(playersRef.current).forEach((p) => p.dispose());
     Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
     Object.values(pannerNodesRef.current).forEach((p) => { try { p.dispose(); } catch {} });
-    if (masterEqRef.current) {
-      masterEqRef.current.dispose();
-      masterEqRef.current = null;
-    }
-    if (masterCompressorRef.current) {
-      masterCompressorRef.current.dispose();
-      masterCompressorRef.current = null;
-    }
-    if (masterLimiterRef.current) {
-      masterLimiterRef.current.dispose();
-      masterLimiterRef.current = null;
-    }
+    disposeMasterChain();
     playersRef.current = {};
     volumeNodesRef.current = {};
     pannerNodesRef.current = {};
@@ -1978,6 +2175,12 @@ function App() {
     resetStemLyrics();
     setEditingStemProjectName(false);
     setEditingProjectNameId(null);
+    if (recordedKaraokeUrl) URL.revokeObjectURL(recordedKaraokeUrl);
+    setRecordedKaraokeUrl(null);
+    setRecordedKaraokeName('');
+    recordedBlobRef.current = null;
+    setMicError('');
+    setRecordingSeconds(0);
     setStatus('idle');
     setProgressText('');
     setStemHomeMode(homeMode);
@@ -2007,20 +2210,60 @@ function App() {
       Object.values(playersRef.current).forEach(p => p.dispose());
       Object.values(volumeNodesRef.current).forEach(v => v.dispose());
       Object.values(pannerNodesRef.current).forEach(p => { try { p.dispose(); } catch {} });
-      if (masterEqRef.current) { masterEqRef.current.dispose(); masterEqRef.current = null; }
-      if (masterCompressorRef.current) { masterCompressorRef.current.dispose(); masterCompressorRef.current = null; }
-      if (masterPitchShiftRef.current) { masterPitchShiftRef.current.dispose(); masterPitchShiftRef.current = null; }
-      if (masterLimiterRef.current) { masterLimiterRef.current.dispose(); masterLimiterRef.current = null; }
+      disposeMasterChain();
 
       const masterEq = new Tone.EQ3(0, 0, 0);
+      // 10-band graphic EQ (≈1-octave peaking bands)
+      const graphicEqBands = EQ_BAND_FREQS.map((freq, i) => new Tone.BiquadFilter({
+        type: 'peaking',
+        frequency: freq,
+        Q: Math.SQRT2,
+        gain: eqBands[i] ?? 0,
+      }));
+      const denoiseHp = new Tone.Filter({ type: 'highpass', frequency: denoiseEnabled ? 90 : 20, Q: 0.7 });
+      const denoiseLp = new Tone.Filter({ type: 'lowpass', frequency: denoiseEnabled ? 12000 : 20000, Q: 0.7 });
       const masterCompressor = new Tone.Compressor({ threshold: 0, ratio: 1, attack: 0.01, release: 0.1 });
-      const masterPitchShift = new Tone.PitchShift({ pitch: pitch, windowSize: 0.1, delayTime: 0, feedback: 0 });
-      const masterLimiter = new Tone.Limiter(-1);
-      masterEq.chain(masterCompressor, masterPitchShift, masterLimiter, Tone.Destination);
+      const masterDelay = new Tone.FeedbackDelay({
+        delayTime: 0.2,
+        feedback: 0.22,
+        wet: delayEnabled ? DELAY_WET : 0,
+      });
+      const masterReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: reverbEnabled ? REVERB_WET : 0 });
+      await masterReverb.generate();
+      const masterMakeup = new Tone.Volume(normalizeEnabled ? STEM_MAKEUP_DB : 0);
+      const masterLimiter = new Tone.Limiter(limiterEnabled ? -1 : 0);
+      const masterOut = new Tone.Gain(1);
+      // Speakers: undelayed. Recorder: music delayed to match mic input latency.
+      const recordCompDelay = new Tone.Delay({ delayTime: 0, maxDelay: 0.5 });
+      const recordDest = Tone.getContext().createMediaStreamDestination();
+      // Pitch is applied per-stem via GrainPlayer.detune (keeps chords/vocals coherent).
+      masterEq.chain(
+        ...graphicEqBands,
+        denoiseHp,
+        denoiseLp,
+        masterCompressor,
+        masterDelay,
+        masterReverb,
+        masterMakeup,
+        masterLimiter,
+        masterOut
+      );
+      masterOut.connect(Tone.Destination);
+      masterOut.connect(recordCompDelay);
+      recordCompDelay.connect(recordDest);
       masterEqRef.current = masterEq;
+      masterEqBandsRef.current = graphicEqBands;
+      masterDenoiseHpRef.current = denoiseHp;
+      masterDenoiseLpRef.current = denoiseLp;
       masterCompressorRef.current = masterCompressor;
-      masterPitchShiftRef.current = masterPitchShift;
+      masterPitchShiftRef.current = null;
+      masterDelayRef.current = masterDelay;
+      masterReverbRef.current = masterReverb;
+      masterMakeupRef.current = masterMakeup;
       masterLimiterRef.current = masterLimiter;
+      masterOutRef.current = masterOut;
+      recordCompDelayRef.current = recordCompDelay;
+      recordDestRef.current = recordDest;
 
       const newPlayers = {};
       const newVolumes = {};
@@ -2030,21 +2273,35 @@ function App() {
       const initPans = {};
       let loadedCount = 0;
 
+      // Pitch 0 → Tone.Player (stable level). Pitch ≠ 0 → GrainPlayer (independent pitch).
+      const loadPitch = settings?.pitch ?? pitch;
+      const loadTempo = settings?.tempo ?? tempo;
+      const useGrain = needsGrainPitch(loadPitch);
+
       const loadPromises = INSTRUMENTS.map((inst) => {
         const url = `${API_BASE_URL}/audio/${id}/${inst.id}.mp3`;
         const panNode = new Tone.Panner(0).connect(masterEq);
         const volNode = new Tone.Volume(0).connect(panNode);
 
         return new Promise((resolve, reject) => {
-          const player = new Tone.Player({
+          const common = {
             url,
+            playbackRate: loadTempo,
             onload: () => {
               loadedCount += 1;
               setProgressText(`Memuat ${inst.label}... (${loadedCount}/${INSTRUMENTS.length})`);
               resolve();
             },
             onerror: (err) => reject(new Error(`Gagal memuat ${inst.label}: ${err?.message || 'file tidak ditemukan'}`)),
-          });
+          };
+          const player = useGrain
+            ? new Tone.GrainPlayer({
+                ...common,
+                grainSize: grainSizeForPitch(loadPitch),
+                overlap: GRAIN_OVERLAP,
+                detune: loadPitch * 100,
+              })
+            : new Tone.Player(common);
 
           player.connect(volNode);
           player.sync().start(0);
@@ -2075,7 +2332,21 @@ function App() {
         setEqLow(0);
         setEqMid(0);
         setEqHigh(0);
+        setEqBands(flatEqBands());
+        masterEqBandsRef.current.forEach((f) => { if (f?.gain) f.gain.value = 0; });
         setCompressorEnabled(false);
+        setLimiterEnabled(true);
+        setNormalizeEnabled(true);
+        setDenoiseEnabled(false);
+        setReverbEnabled(false);
+        setDelayEnabled(false);
+        if (masterMakeupRef.current) masterMakeupRef.current.volume.value = STEM_MAKEUP_DB;
+        if (masterLimiterRef.current) masterLimiterRef.current.threshold.value = -1;
+        if (masterDenoiseHpRef.current) masterDenoiseHpRef.current.frequency.value = 20;
+        if (masterDenoiseLpRef.current) masterDenoiseLpRef.current.frequency.value = 20000;
+        if (masterReverbRef.current) masterReverbRef.current.wet.value = 0;
+        if (masterDelayRef.current) masterDelayRef.current.wet.value = 0;
+        Tone.Destination.volume.value = masterVolume;
       }
 
       if (newPlayers[INSTRUMENTS[0].id]?.buffer) {
@@ -2113,18 +2384,7 @@ function App() {
     setIsPlaying(false);
     Object.values(playersRef.current).forEach((p) => p.dispose());
     Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
-    if (masterEqRef.current) {
-      masterEqRef.current.dispose();
-      masterEqRef.current = null;
-    }
-    if (masterCompressorRef.current) {
-      masterCompressorRef.current.dispose();
-      masterCompressorRef.current = null;
-    }
-    if (masterLimiterRef.current) {
-      masterLimiterRef.current.dispose();
-      masterLimiterRef.current = null;
-    }
+    disposeMasterChain();
 
     resetStemLyrics();
     setFile(null);
@@ -2193,7 +2453,9 @@ function App() {
     return () => clearTimeout(saveSettingsTimeoutRef.current);
   }, [
     status, fileId, volumes, mutes, pans, pitch, tempo,
-    eqLow, eqMid, eqHigh, compressorEnabled, stemLyricsOffsetMs, stemLyricsSpeedPct,
+    eqLow, eqMid, eqHigh, eqBands, compressorEnabled, masterVolume, limiterEnabled, normalizeEnabled,
+    denoiseEnabled, reverbEnabled, delayEnabled,
+    stemLyricsOffsetMs, stemLyricsSpeedPct,
     saveProjectSettings,
   ]);
 
@@ -2244,12 +2506,66 @@ function App() {
     });
   };
 
+  const rebuildStemPlayersForPitch = (nextPitch) => {
+    const wantGrain = needsGrainPitch(nextPitch);
+    const sample = Object.values(playersRef.current)[0];
+    if (!sample) return;
+    const currentlyGrain = 'grainSize' in sample;
+    if (wantGrain === currentlyGrain) {
+      // Same engine — just update grain params / skip Player detune (Player.detune changes speed)
+      if (wantGrain) {
+        const cents = nextPitch * 100;
+        const grainSize = grainSizeForPitch(nextPitch);
+        Object.values(playersRef.current).forEach((p) => {
+          if (!p) return;
+          if (p.detune !== undefined) p.detune = cents;
+          if ('grainSize' in p) p.grainSize = grainSize;
+        });
+      }
+      return;
+    }
+
+    const wasPlaying = Tone.Transport.state === 'started';
+    const t = Tone.Transport.seconds;
+    if (wasPlaying) Tone.Transport.pause();
+
+    const nextPlayers = {};
+    INSTRUMENTS.forEach((inst) => {
+      const old = playersRef.current[inst.id];
+      const volNode = volumeNodesRef.current[inst.id];
+      if (!old?.buffer || !volNode) return;
+      const buffer = old.buffer;
+      try { old.unsync(); } catch { /* ignore */ }
+      try { old.disconnect(); } catch { /* ignore */ }
+      try { old.dispose(); } catch { /* ignore */ }
+
+      const player = wantGrain
+        ? new Tone.GrainPlayer({
+            url: buffer,
+            grainSize: grainSizeForPitch(nextPitch),
+            overlap: GRAIN_OVERLAP,
+            detune: nextPitch * 100,
+            playbackRate: tempo,
+          })
+        : new Tone.Player({
+            url: buffer,
+            playbackRate: tempo,
+          });
+      player.connect(volNode);
+      player.sync().start(0);
+      nextPlayers[inst.id] = player;
+    });
+
+    playersRef.current = nextPlayers;
+    setPlayers(nextPlayers);
+    Tone.Transport.seconds = t;
+    if (wasPlaying) Tone.Transport.start();
+  };
+
   const handlePitchChange = (e) => {
     const val = parseFloat(e.target.value);
     setPitch(val);
-    if (masterPitchShiftRef.current) {
-      masterPitchShiftRef.current.pitch = val;
-    }
+    rebuildStemPlayersForPitch(val);
   };
 
   const handleTempoChange = (e) => {
@@ -2284,6 +2600,20 @@ function App() {
     setEqHigh(val);
     if (masterEqRef.current) masterEqRef.current.high.value = val;
   };
+  const handleEqBandChange = (index, val) => {
+    setEqBands((prev) => {
+      const next = [...prev];
+      next[index] = val;
+      return next;
+    });
+    const node = masterEqBandsRef.current[index];
+    if (node?.gain) node.gain.value = val;
+  };
+  const handleEqBandsReset = () => {
+    const flat = flatEqBands();
+    setEqBands(flat);
+    masterEqBandsRef.current.forEach((f) => { if (f?.gain) f.gain.value = 0; });
+  };
   const handleMasterVolumeChange = (val) => {
     setMasterVolume(val);
     Tone.Destination.volume.value = val;
@@ -2297,6 +2627,286 @@ function App() {
       }
       return next;
     });
+  };
+  const handleLimiterToggle = () => {
+    setLimiterEnabled(prev => {
+      const next = !prev;
+      if (masterLimiterRef.current) {
+        masterLimiterRef.current.threshold.value = next ? -1 : 0;
+      }
+      return next;
+    });
+  };
+  const handleNormalizeToggle = () => {
+    setNormalizeEnabled(prev => {
+      const next = !prev;
+      if (masterMakeupRef.current) {
+        masterMakeupRef.current.volume.value = next ? STEM_MAKEUP_DB : 0;
+      }
+      return next;
+    });
+  };
+  const handleDenoiseToggle = () => {
+    setDenoiseEnabled(prev => {
+      const next = !prev;
+      if (masterDenoiseHpRef.current && masterDenoiseLpRef.current) {
+        masterDenoiseHpRef.current.frequency.value = next ? 90 : 20;
+        masterDenoiseLpRef.current.frequency.value = next ? 12000 : 20000;
+      }
+      return next;
+    });
+  };
+  const handleReverbToggle = () => {
+    setReverbEnabled(prev => {
+      const next = !prev;
+      if (masterReverbRef.current) {
+        masterReverbRef.current.wet.value = next ? REVERB_WET : 0;
+      }
+      return next;
+    });
+  };
+  const handleDelayToggle = () => {
+    setDelayEnabled(prev => {
+      const next = !prev;
+      if (masterDelayRef.current) {
+        masterDelayRef.current.wet.value = next ? DELAY_WET : 0;
+      }
+      return next;
+    });
+  };
+
+  const stopKaraokeRecording = () => {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    mediaRecorderRef.current = null;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    setIsRecordingKaraoke(false);
+    if (Tone.Transport.state === 'started') {
+      Tone.Transport.pause();
+      if (stemVideoRef.current) stemVideoRef.current.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const estimateMicLatencyMs = () => {
+    try {
+      const ctx = Tone.getContext().rawContext;
+      const baseMs = (ctx.baseLatency || 0) * 1000;
+      const outMs = (ctx.outputLatency || 0) * 1000;
+      // Input buffer + OS/driver cushion (voice biasanya tertinggal tanpa kompensasi)
+      return Math.round(Math.min(300, Math.max(80, baseMs + outMs + 100)));
+    } catch {
+      return 140;
+    }
+  };
+
+  const applyRecordLatencyCompensation = (ms) => {
+    const clamped = Math.min(300, Math.max(0, ms));
+    if (recordCompDelayRef.current) {
+      recordCompDelayRef.current.delayTime.value = clamped / 1000;
+    }
+  };
+
+  const enableMic = async () => {
+    setMicError('');
+    try {
+      await Tone.start();
+      if (!recordDestRef.current || !masterOutRef.current) {
+        setMicError('Buka proyek studio dulu sebelum mengaktifkan mic.');
+        return;
+      }
+      if (micRef.current) {
+        setMicReady(true);
+        return;
+      }
+      const mic = new Tone.UserMedia();
+      // Low-latency constraints: AEC/NS sering menambah delay & membuat vokal tertinggal
+      await mic.open({
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      });
+      const micVol = new Tone.Volume(micVolume);
+      const micEcho = new Tone.FeedbackDelay({
+        delayTime: MIC_ECHO_TIME,
+        feedback: MIC_ECHO_FEEDBACK,
+        wet: micEchoEnabled ? (micEchoAmount / 100) * MIC_ECHO_WET_MAX : 0,
+      });
+      mic.connect(micVol);
+      micVol.connect(micEcho);
+      // Monitor + rekaman lewat echo (wet=0 = dry murni)
+      // Musik ke recorder lewat recordCompDelay agar sejajar dengan latency mic
+      micEcho.connect(Tone.Destination);
+      micEcho.connect(recordDestRef.current);
+      micRef.current = mic;
+      micVolRef.current = micVol;
+      micEchoRef.current = micEcho;
+      const estimated = estimateMicLatencyMs();
+      setRecordLatencyMs(estimated);
+      applyRecordLatencyCompensation(estimated);
+      setMicReady(true);
+    } catch (e) {
+      console.error(e);
+      setMicError('Gagal mengakses microphone. Izinkan akses mic di browser/OS.');
+      setMicReady(false);
+    }
+  };
+
+  const disableMic = () => {
+    if (isRecordingKaraoke) stopKaraokeRecording();
+    try { micRef.current?.close(); } catch { /* ignore */ }
+    try { micRef.current?.disconnect(); } catch { /* ignore */ }
+    try { micRef.current?.dispose(); } catch { /* ignore */ }
+    try { micEchoRef.current?.dispose(); } catch { /* ignore */ }
+    try { micVolRef.current?.dispose(); } catch { /* ignore */ }
+    micRef.current = null;
+    micEchoRef.current = null;
+    micVolRef.current = null;
+    setMicReady(false);
+  };
+
+  const handleMicVolumeChange = (val) => {
+    setMicVolume(val);
+    if (micVolRef.current) micVolRef.current.volume.value = val;
+  };
+
+  const applyMicEchoWet = (enabled, amount) => {
+    if (!micEchoRef.current) return;
+    micEchoRef.current.wet.value = enabled ? (amount / 100) * MIC_ECHO_WET_MAX : 0;
+  };
+
+  const handleMicEchoToggle = () => {
+    setMicEchoEnabled((prev) => {
+      const next = !prev;
+      applyMicEchoWet(next, micEchoAmount);
+      return next;
+    });
+  };
+
+  const handleMicEchoAmountChange = (val) => {
+    setMicEchoAmount(val);
+    applyMicEchoWet(micEchoEnabled, val);
+  };
+
+  const handleRecordLatencyChange = (ms) => {
+    setRecordLatencyMs(ms);
+    applyRecordLatencyCompensation(ms);
+  };
+
+  const startKaraokeRecording = async () => {
+    setMicError('');
+    try {
+      await Tone.start();
+      if (!micRef.current) await enableMic();
+      if (!recordDestRef.current) {
+        setMicError('Bus rekaman belum siap.');
+        return;
+      }
+      // Pastikan kompensasi delay aktif sebelum MediaRecorder jalan
+      applyRecordLatencyCompensation(recordLatencyMs);
+      if (recordedKaraokeUrl) {
+        URL.revokeObjectURL(recordedKaraokeUrl);
+        setRecordedKaraokeUrl(null);
+      }
+      recordedBlobRef.current = null;
+      recordChunksRef.current = [];
+
+      const stream = recordDestRef.current.stream;
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || 'audio/webm';
+        const blob = new Blob(recordChunksRef.current, { type });
+        recordedBlobRef.current = blob;
+        const url = URL.createObjectURL(blob);
+        setRecordedKaraokeUrl(url);
+        const base = (stemTrackName || 'karaoke').replace(/[^\w\s\-().]/g, '').trim() || 'karaoke';
+        setRecordedKaraokeName(`${base} karaoke.webm`);
+      };
+      recorder.start(250);
+      setIsRecordingKaraoke(true);
+      setRecordingSeconds(0);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+      }, 1000);
+
+      // Mulai playback dari awal / trim start
+      if (Tone.Transport.state !== 'started') {
+        const startAt = trimEnabled ? trimStart : 0;
+        Tone.Transport.seconds = startAt;
+        setStemCurrentTime(startAt);
+        if (stemVideoRef.current) stemVideoRef.current.currentTime = startAt;
+        await Tone.Transport.start();
+        if (stemVideoRef.current) stemVideoRef.current.play().catch(() => {});
+        setIsPlaying(true);
+      }
+    } catch (e) {
+      console.error(e);
+      setMicError('Gagal mulai rekaman: ' + (e.message || 'unknown'));
+      setIsRecordingKaraoke(false);
+    }
+  };
+
+  const downloadRecordedKaraokeLocal = () => {
+    if (!recordedKaraokeUrl) return;
+    const a = document.createElement('a');
+    a.href = recordedKaraokeUrl;
+    a.download = recordedKaraokeName || 'karaoke-recording.webm';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const exportRecordedKaraokeMp3 = async () => {
+    if (!recordedBlobRef.current) {
+      setMicError('Belum ada rekaman untuk diekspor.');
+      return;
+    }
+    setIsSavingRecording(true);
+    setMicError('');
+    try {
+      const form = new FormData();
+      const base = (stemTrackName || 'karaoke').replace(/[^\w\s\-().]/g, '').trim() || 'karaoke';
+      form.append('file', recordedBlobRef.current, `${base} karaoke.webm`);
+      form.append('display_name', base);
+      const res = await fetch(`${API_BASE_URL}/karaoke/recording`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || data.detail || 'Gagal mengekspor rekaman');
+      }
+      const a = document.createElement('a');
+      a.href = `${API_BASE_URL}${data.download_url}`;
+      a.download = data.filename || `${base} karaoke.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error(e);
+      setMicError(e.message || 'Gagal export MP3 rekaman');
+    } finally {
+      setIsSavingRecording(false);
+    }
   };
 
   const exportMix = async () => {
@@ -2319,16 +2929,24 @@ function App() {
           eq_low: eqLow,
           eq_mid: eqMid,
           eq_high: eqHigh,
+          eq_bands: eqBands,
           compressor_enabled: compressorEnabled,
+          master_volume: masterVolume,
+          limiter_enabled: limiterEnabled,
+          normalize_enabled: normalizeEnabled,
+          denoise_enabled: denoiseEnabled,
+          reverb_enabled: reverbEnabled,
+          delay_enabled: delayEnabled,
           trim_start: trimEnabled ? trimStart : 0,
           trim_end: trimEnabled ? trimEnd : null,
-          export_video: activeTab === 'karaoke',
+          export_video: isVideoFile(stemOriginalName || file?.name),
         })
       });
       
       const data = await response.json();
       if (data.status === 'success' && data.download_url) {
-        const exportName = data.filename || `${(stemTrackName || 'export').replace(/\.mp3$/i, '')} edit.mp3`;
+        const isVideoExport = isVideoFile(stemOriginalName || file?.name);
+        const exportName = data.filename || `${(stemTrackName || 'export').replace(/\.[^.]+$/i, '')} edit.${isVideoExport ? 'mp4' : 'mp3'}`;
         const a = document.createElement('a');
         a.href = `${API_BASE_URL}${data.download_url}`;
         a.download = exportName;
@@ -2606,12 +3224,6 @@ function App() {
             <Music size={18} /> Stem Separator
           </button>
           <button
-            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
-            onClick={() => setActiveTab('karaoke')}
-          >
-            <Video size={18} /> Video Karaoke
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
             onClick={() => setActiveTab('yt2mp3')}
           >
@@ -2621,7 +3233,7 @@ function App() {
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> MP3 Playlist
+            <ListMusic size={18} /> Media Playlist
           </button>
         </nav>
       )}
@@ -2652,12 +3264,6 @@ function App() {
             <Music size={18} /> Stem Separator
           </button>
           <button
-            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
-            onClick={() => setActiveTab('karaoke')}
-          >
-            <Video size={18} /> Video Karaoke
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
             onClick={() => setActiveTab('yt2mp3')}
           >
@@ -2667,7 +3273,7 @@ function App() {
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> MP3 Playlist
+            <ListMusic size={18} /> Media Playlist
           </button>
         </nav>
       )}
@@ -2750,7 +3356,8 @@ function App() {
   // RENDER: MAIN APP (Licensed)
   // ============================================
 
-  const isStudioFullPage = (activeTab === 'stems' || activeTab === 'karaoke') && status === 'ready';
+  const isStemVideo = isVideoFile(stemOriginalName || file?.name);
+  const isStudioFullPage = activeTab === 'stems' && status === 'ready';
 
   return (
     <div className={`app-container${isStudioFullPage ? ' app-container--studio-full' : ''}`}>
@@ -2758,19 +3365,6 @@ function App() {
       
       <header className="header">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%', maxWidth: '1000px' }}>
-          {token && (
-            <div className="user-profile" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-              {isAdmin && (
-                <button className="admin-btn" onClick={() => { setShowAdminPanel(!showAdminPanel); if (!showAdminPanel) fetchUsers(); }}>
-                  <Shield size={16} /> Admin
-                </button>
-              )}
-              <span className="welcome-text">Hai, {username}</span>
-              {/* <button className="logout-btn" onClick={handleLogout}>
-                <LogOut size={16} /> Keluar
-              </button> */}
-            </div>
-          )}
           <div>
             <h1>Jagat <span>Audio</span></h1>
             <p>AI Stem Separation & Karaoke{licenseInfo?.app_version ? ` • v${licenseInfo.app_version}` : ''}</p>
@@ -2778,24 +3372,48 @@ function App() {
         </div>
       </header>
 
-      {/* License Info Bar */}
+      {/* License info — hidden by default; user can expand when needed */}
       {licenseInfo && (
-        <div className="license-info-card" style={{ maxWidth: '500px', width: '100%', marginBottom: '1rem', padding: '0.8rem 1.2rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-              <CheckCircle size={16} color="#2ec4b6" />
-              <span className="license-active-badge">Lisensi Aktif</span>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                {formatLicenseType(licenseInfo.license_type)}
-              </span>
+        <div className="license-info-toggle-wrap">
+          {!showLicenseDetails ? (
+            <button
+              type="button"
+              className="license-info-toggle-btn"
+              onClick={() => setShowLicenseDetails(true)}
+              title="Lihat info"
+            >
+              <KeyRound size={16} />
+              Info
+              <ChevronDown size={16} />
+            </button>
+          ) : (
+            <div className="license-info-card" style={{ maxWidth: '500px', width: '100%', marginBottom: '0.5rem', padding: '0.8rem 1.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                  <CheckCircle size={16} color="#2ec4b6" />
+                  <span className="license-active-badge">Lisensi Aktif</span>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    {formatLicenseType(licenseInfo.license_type)}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: licenseInfo.days_remaining <= 30 ? '#ff9f1c' : 'var(--text-secondary)' }}>
+                    <Clock size={14} color={licenseInfo.days_remaining <= 30 ? '#ff9f1c' : '#2ec4b6'} />
+                    Sisa {licenseInfo.days_remaining} hari • Exp: {formatDate(licenseInfo.expiry_date)}
+                  </span>
+                  <button
+                    type="button"
+                    className="license-info-toggle-btn license-info-toggle-btn--inline"
+                    onClick={() => setShowLicenseDetails(false)}
+                    title="Sembunyikan info"
+                  >
+                    Sembunyikan
+                    <ChevronUp size={16} />
+                  </button>
+                </div>
+              </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
-              <Clock size={14} color={licenseInfo.days_remaining <= 30 ? '#ff9f1c' : '#2ec4b6'} />
-              <span style={{ color: licenseInfo.days_remaining <= 30 ? '#ff9f1c' : 'var(--text-secondary)' }}>
-                Sisa {licenseInfo.days_remaining} hari • Exp: {formatDate(licenseInfo.expiry_date)}
-              </span>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -2815,12 +3433,6 @@ function App() {
             <Music size={18} /> Stem Separator
           </button>
           <button
-            className={`tab-btn ${activeTab === 'karaoke' ? 'active' : ''}`}
-            onClick={() => setActiveTab('karaoke')}
-          >
-            <Video size={18} /> Video Karaoke
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'yt2mp3' ? 'active' : ''}`}
             onClick={() => setActiveTab('yt2mp3')}
           >
@@ -2830,7 +3442,7 @@ function App() {
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> MP3 Playlist
+            <ListMusic size={18} /> Media Playlist
           </button>
         </nav>
         </div>
@@ -2960,7 +3572,7 @@ function App() {
               </button>
             </p>
           </div>
-        ) : (activeTab === 'stems' || activeTab === 'karaoke') ? (
+        ) : activeTab === 'stems' ? (
           <>
             {status === 'idle' && (
           <div className="stem-home-layout">
@@ -2988,13 +3600,13 @@ function App() {
           <div className="upload-card">
             <div className="upload-area">
               <Upload size={48} className="upload-icon" />
-              <h3>Unggah {activeTab === 'karaoke' ? 'Video Karaoke' : 'Lagu Anda'}</h3>
-              <p>Format {activeTab === 'karaoke' ? 'Video (MP4)' : 'MP3 dan WAV'} didukung. File akan diproses dengan AI Demucs.</p>
+              <h3>Unggah Lagu atau Video</h3>
+              <p>Format MP3, WAV, dan Video (MP4) didukung. File akan diproses dengan AI Demucs.</p>
               <label className="upload-btn">
                 Pilih File
                 <input 
                   type="file" 
-                  accept={activeTab === 'karaoke' ? "video/mp4,video/quicktime,video/x-msvideo,video/webm" : "audio/mp3,audio/wav"} 
+                  accept="audio/mp3,audio/mpeg,audio/wav,video/mp4,video/quicktime,video/x-msvideo,video/webm,.mp3,.wav,.mp4,.mov,.avi,.mkv,.webm" 
                   onChange={handleFileSelect} 
                   hidden 
                 />
@@ -3024,9 +3636,7 @@ function App() {
               </div>
             ) : (
               <ul className="saved-projects-list">
-                {savedProjects
-                  .filter((project) => activeTab === 'karaoke' ? isVideoFile(project.original_name) : !isVideoFile(project.original_name))
-                  .map((project) => (
+                {savedProjects.map((project) => (
                   <li key={project.file_id} className="saved-project-item">
                     {editingProjectNameId === project.file_id ? (
                       <form
@@ -3222,7 +3832,7 @@ function App() {
 
             {status === 'processing' && (
               <>
-                <h3>Memisahkan Audio dengan AI</h3>
+                <h3>Memisahkan Audio</h3>
                 <p className="progress-text">Teknologi Demucs HT Demucs 6-Stems sedang berjalan.</p>
                 
                 <div className="progress-section">
@@ -3294,7 +3904,7 @@ function App() {
                     </button>
                     <button className="process-btn" onClick={exportMix} disabled={isExporting} style={{ padding: '0.8rem 1.5rem', borderRadius: '12px' }}>
                       {isExporting ? <Loader2 size={20} className="spinner" /> : <Download size={20} />}
-                      <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : (activeTab === 'karaoke' ? 'Export MP4' : 'Export MP3')}</span>
+                      <span style={{ marginLeft: '8px' }}>{isExporting ? 'Mengekspor...' : (isStemVideo ? 'Export MP4' : 'Export Media')}</span>
                     </button>
                     <button 
                       className={`process-btn trim-toggle-btn ${trimEnabled ? 'active' : ''}`}
@@ -3339,6 +3949,127 @@ function App() {
                     className="original-slider" 
                   />
                   <span className="time-display">{formatTime(stemDuration)}</span>
+                </div>
+
+                {/* Karaoke Mic Recording */}
+                <div className="karaoke-record-panel">
+                  <div className="karaoke-record-header">
+                    <Mic size={18} color={isRecordingKaraoke ? '#ff477e' : '#c4a7ff'} />
+                    <strong>Rekaman Karaoke</strong>
+                    {isRecordingKaraoke && (
+                      <span className="karaoke-record-live">
+                        <Circle size={10} fill="#ff477e" color="#ff477e" /> REC {formatTime(recordingSeconds)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="karaoke-record-hint">
+                    Aktifkan mic, mute channel Vokal, lalu rekam. Pakai headset agar tidak feedback.
+                    Jika vokal di export masih tertinggal, naikkan <strong>Sync delay</strong>.
+                  </p>
+                  <div className="karaoke-record-controls">
+                    {!micReady ? (
+                      <button type="button" className="process-btn karaoke-mic-btn" onClick={enableMic}>
+                        <Mic size={18} />
+                        <span>Aktifkan Mic</span>
+                      </button>
+                    ) : (
+                      <button type="button" className="process-btn karaoke-mic-btn active" onClick={disableMic}>
+                        <Mic size={18} />
+                        <span>Mic ON</span>
+                      </button>
+                    )}
+                    <div className="karaoke-mic-vol">
+                      <label>Mic Vol</label>
+                      <input
+                        type="range"
+                        min="-24"
+                        max="12"
+                        step="1"
+                        value={micVolume}
+                        disabled={!micReady}
+                        onChange={(e) => handleMicVolumeChange(parseFloat(e.target.value))}
+                        className="accent-slider"
+                      />
+                      <span>{micVolume > 0 ? '+' : ''}{micVolume} dB</span>
+                    </div>
+                    <div className="karaoke-mic-vol">
+                      <label>Sync delay</label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="300"
+                        step="10"
+                        value={recordLatencyMs}
+                        onChange={(e) => handleRecordLatencyChange(parseFloat(e.target.value))}
+                        className="accent-slider"
+                        title="Geser naik jika vokal tertinggal di hasil rekaman"
+                      />
+                      <span>{recordLatencyMs} ms</span>
+                    </div>
+                    <div className="karaoke-mic-echo">
+                      <button
+                        type="button"
+                        className={`karaoke-echo-btn ${micEchoEnabled ? 'active' : ''}`}
+                        onClick={handleMicEchoToggle}
+                        disabled={!micReady}
+                        title="Echo/delay untuk suara mic (monitor + rekaman)"
+                      >
+                        Echo {micEchoEnabled ? 'ON' : 'OFF'}
+                      </button>
+                      <div className="karaoke-mic-vol">
+                        <label>Echo</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          value={micEchoAmount}
+                          disabled={!micReady || !micEchoEnabled}
+                          onChange={(e) => handleMicEchoAmountChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                          title="Kekuatan echo mic"
+                        />
+                        <span>{micEchoAmount}%</span>
+                      </div>
+                    </div>
+                    {!isRecordingKaraoke ? (
+                      <button
+                        type="button"
+                        className="process-btn karaoke-rec-btn"
+                        onClick={startKaraokeRecording}
+                        disabled={status !== 'ready'}
+                      >
+                        <Circle size={16} fill="#ff477e" color="#ff477e" />
+                        <span>Mulai Rekam</span>
+                      </button>
+                    ) : (
+                      <button type="button" className="process-btn karaoke-stop-btn" onClick={stopKaraokeRecording}>
+                        <Square size={16} fill="#fff" />
+                        <span>Stop</span>
+                      </button>
+                    )}
+                  </div>
+                  {micError && <p className="karaoke-record-error">{micError}</p>}
+                  {recordedKaraokeUrl && (
+                    <div className="karaoke-record-result">
+                      <audio src={recordedKaraokeUrl} controls style={{ width: '100%' }} />
+                      <div className="karaoke-record-actions">
+                        <button type="button" className="process-btn" onClick={downloadRecordedKaraokeLocal}>
+                          <Download size={16} />
+                          <span>Unduh WebM</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="process-btn"
+                          onClick={exportRecordedKaraokeMp3}
+                          disabled={isSavingRecording}
+                        >
+                          {isSavingRecording ? <Loader2 size={16} className="spinner" /> : <Download size={16} />}
+                          <span>{isSavingRecording ? 'Mengonversi...' : 'Export MP3'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Trim Controls Panel */}
@@ -3508,7 +4239,7 @@ function App() {
               </div>
 
               <div className="enhancer-controls" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                {/* EQ Sliders */}
+                {/* Quick EQ + Master */}
                 <div style={{ display: 'flex', gap: '1.5rem', flex: '1 1 auto' }}>
                   {/* Bass */}
                   <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
@@ -3550,7 +4281,7 @@ function App() {
                   <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '1.5rem', marginLeft: '0.5rem' }}>
                     <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Master Vol</label>
                     <input 
-                      type="range" min="-60" max="6" step="1" 
+                      type="range" min="-60" max="12" step="1" 
                       value={masterVolume} 
                       onChange={(e) => handleMasterVolumeChange(parseFloat(e.target.value))} 
                       className="accent-slider eq-slider"
@@ -3560,28 +4291,179 @@ function App() {
                   </div>
                 </div>
 
-                {/* Compressor Toggle */}
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
-                  <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Compressor</label>
-                  <button 
-                    onClick={handleCompressorToggle}
-                    style={{
-                      padding: '0.6rem 1.4rem',
-                      borderRadius: '10px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontWeight: 700,
-                      fontSize: '0.85rem',
-                      transition: 'all 0.3s ease',
-                      background: compressorEnabled 
-                        ? 'linear-gradient(135deg, #8338ec, #ff477e)' 
-                        : 'rgba(255,255,255,0.08)',
-                      color: compressorEnabled ? '#fff' : 'var(--text-secondary)',
-                      boxShadow: compressorEnabled ? '0 4px 15px rgba(131, 56, 236, 0.4)' : 'none'
-                    }}
-                  >
-                    {compressorEnabled ? 'ON' : 'OFF'}
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  {/* Compressor Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Compressor</label>
+                    <button 
+                      onClick={handleCompressorToggle}
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: compressorEnabled 
+                          ? 'linear-gradient(135deg, #8338ec, #ff477e)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: compressorEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: compressorEnabled ? '0 4px 15px rgba(131, 56, 236, 0.4)' : 'none'
+                      }}
+                    >
+                      {compressorEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Limiter Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Limiter</label>
+                    <button 
+                      onClick={handleLimiterToggle}
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: limiterEnabled 
+                          ? 'linear-gradient(135deg, #2ec4b6, #3a86ff)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: limiterEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: limiterEnabled ? '0 4px 15px rgba(46, 196, 182, 0.35)' : 'none'
+                      }}
+                    >
+                      {limiterEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Normalize Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Normalize</label>
+                    <button 
+                      onClick={handleNormalizeToggle}
+                      title="Naikkan volume stem agar lebih keras & konsisten"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: normalizeEnabled 
+                          ? 'linear-gradient(135deg, #ff9f1c, #ff477e)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: normalizeEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: normalizeEnabled ? '0 4px 15px rgba(255, 159, 28, 0.35)' : 'none'
+                      }}
+                    >
+                      {normalizeEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Denoise Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Denoise</label>
+                    <button 
+                      onClick={handleDenoiseToggle}
+                      title="Bersihkan hiss/noise (cocok untuk rekaman / mic)"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: denoiseEnabled 
+                          ? 'linear-gradient(135deg, #06d6a0, #118ab2)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: denoiseEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: denoiseEnabled ? '0 4px 15px rgba(6, 214, 160, 0.35)' : 'none'
+                      }}
+                    >
+                      {denoiseEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Reverb Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Reverb</label>
+                    <button 
+                      onClick={handleReverbToggle}
+                      title="Ruang karaoke ringan untuk vokal/instrumen"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: reverbEnabled 
+                          ? 'linear-gradient(135deg, #9b5de5, #f15bb5)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: reverbEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: reverbEnabled ? '0 4px 15px rgba(155, 93, 229, 0.35)' : 'none'
+                      }}
+                    >
+                      {reverbEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Delay Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Delay</label>
+                    <button 
+                      onClick={handleDelayToggle}
+                      title="Echo ringan untuk efek karaoke"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: delayEnabled 
+                          ? 'linear-gradient(135deg, #00bbf9, #00f5d4)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: delayEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: delayEnabled ? '0 4px 15px rgba(0, 187, 249, 0.35)' : 'none'
+                      }}
+                    >
+                      {delayEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 10-band Graphic EQ */}
+              <div className="graphic-eq-section">
+                <div className="graphic-eq-header">
+                  <span className="graphic-eq-title">Graphic EQ · 10 Band</span>
+                  <button type="button" className="graphic-eq-reset" onClick={handleEqBandsReset} title="Reset semua band ke 0 dB">
+                    <RotateCcw size={14} /> Reset
                   </button>
+                </div>
+                <div className="graphic-eq">
+                  {EQ_BAND_LABELS.map((label, i) => (
+                    <div key={label} className="graphic-eq-band">
+                      <span className="graphic-eq-gain">
+                        {eqBands[i] > 0 ? '+' : ''}{eqBands[i]}
+                      </span>
+                      <input
+                        type="range"
+                        min="-12"
+                        max="12"
+                        step="1"
+                        value={eqBands[i]}
+                        onChange={(e) => handleEqBandChange(i, parseFloat(e.target.value))}
+                        className="graphic-eq-slider"
+                        aria-label={`EQ ${label} Hz`}
+                      />
+                      <span className="graphic-eq-label">{label}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -4004,8 +4886,9 @@ function App() {
               </div>
 
               <div className="mp3-folder-info glass-panel">
-                <p><strong>Catatan:</strong> Saat memilih folder, Windows/Chrome <em>tidak menampilkan file media</em> di dialog — itu normal.</p>
-                <p>Buka folder tempat file media Anda berada (misalnya <code>Downloads\01</code>), lalu klik <strong>Select Folder</strong>. Daftar lagu/video akan muncul di aplikasi setelah folder dipilih.</p>
+                <p><strong>Catatan:</strong> Bisa pilih <em>folder mana saja</em> yang berisi file media (MP3/MP4/dll), termasuk <code>Downloads</code>.</p>
+                <p>Saat dialog terbuka, Windows/Chrome <em>sering tidak menampilkan daftar file</em> — itu normal. Masuk ke folder yang diinginkan, lalu klik <strong>Select Folder</strong>.</p>
+                <p>Subfolder ikut dipindai. Jika file masih di cloud (OneDrive) dan belum diunduh, mungkin tidak terbaca.</p>
               </div>
 
               <input

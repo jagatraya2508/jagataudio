@@ -31,7 +31,7 @@ if getattr(sys, 'frozen', False):
         except:
             pass
 
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, Depends, HTTPException, status, Request
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -62,15 +62,13 @@ if len(sys.argv) >= 3 and sys.argv[1] == "-m" and sys.argv[2] == "demucs":
     sys.argv = [sys.argv[0]] + sys.argv[3:]
     sys.exit(demucs.separate.main())
 
-# Ensure bundled ffmpeg can be found by adding exe dir to PATH
+# Ensure bundled ffmpeg can be found by adding exe dir / _internal to PATH
 if getattr(sys, 'frozen', False):
-    meipass = sys._MEIPASS
-    if meipass not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = meipass + os.pathsep + os.environ.get("PATH", "")
-        
+    meipass = getattr(sys, '_MEIPASS', None)
     exe_dir = os.path.dirname(sys.executable)
-    if exe_dir not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = exe_dir + os.pathsep + os.environ.get("PATH", "")
+    for candidate in (meipass, exe_dir, os.path.join(exe_dir, '_internal')):
+        if candidate and os.path.isdir(candidate) and candidate not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
 
 import shutil
 import mimetypes
@@ -78,12 +76,54 @@ import logging
 import tempfile
 import json
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 from database import get_db
 from pydantic import BaseModel
 from license_manager import get_hardware_id, validate_license, install_license, get_license_info
 from version import APP_VERSION
+
+
+def _resolve_ffmpeg_dir() -> Optional[str]:
+    """Locate folder containing ffmpeg.exe (bundled portable / system PATH)."""
+    candidates = []
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        meipass = getattr(sys, '_MEIPASS', None)
+        candidates.extend([meipass, exe_dir, os.path.join(exe_dir, '_internal')])
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.extend([here, os.path.join(here, '..', 'build', 'pyinstaller_output', 'JagatAudio', '_internal')])
+
+    for d in candidates:
+        if not d:
+            continue
+        d = os.path.abspath(d)
+        if os.path.isfile(os.path.join(d, 'ffmpeg.exe')) or os.path.isfile(os.path.join(d, 'ffmpeg')):
+            return d
+
+    which = shutil.which('ffmpeg')
+    if which:
+        return os.path.dirname(os.path.abspath(which))
+    return None
+
+
+def _ffmpeg_bin() -> str:
+    """Absolute path to ffmpeg binary, or bare 'ffmpeg' as last resort."""
+    d = _resolve_ffmpeg_dir()
+    if d:
+        for name in ('ffmpeg.exe', 'ffmpeg'):
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                return p
+    return 'ffmpeg'
+
+
+def _ydl_ffmpeg_opts() -> dict:
+    """yt-dlp options so postprocessing finds bundled ffmpeg/ffprobe."""
+    d = _resolve_ffmpeg_dir()
+    return {'ffmpeg_location': d} if d else {}
+
 
 app = FastAPI()
 
@@ -662,7 +702,14 @@ class ProjectSettings(BaseModel):
     eq_low: float = 0.0
     eq_mid: float = 0.0
     eq_high: float = 0.0
+    eq_bands: List[float] = []  # 10-band graphic EQ gains (dB)
     compressor_enabled: bool = False
+    master_volume: float = 0.0
+    limiter_enabled: bool = True
+    normalize_enabled: bool = True
+    denoise_enabled: bool = False
+    reverb_enabled: bool = False
+    delay_enabled: bool = False
     stem_lyrics_offset_ms: float = 0.0
     stem_lyrics_speed_pct: float = 100.0
 
@@ -790,7 +837,14 @@ class MixParams(BaseModel):
     eq_low: float = 0.0    # -12 to 12 dB
     eq_mid: float = 0.0    # -12 to 12 dB
     eq_high: float = 0.0   # -12 to 12 dB
+    eq_bands: List[float] = []  # 10-band graphic EQ gains (dB), centers 31..16k Hz
     compressor_enabled: bool = False
+    master_volume: float = 0.0  # dB
+    limiter_enabled: bool = True
+    normalize_enabled: bool = True
+    denoise_enabled: bool = False
+    reverb_enabled: bool = False
+    delay_enabled: bool = False
     trim_start: float = 0.0
     trim_end: Optional[float] = None
     export_video: bool = False
@@ -822,7 +876,7 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
         
     out_filepath = os.path.join(export_dir, out_filename)
     
-    command = ["ffmpeg", "-y"]
+    command = [_ffmpeg_bin(), "-y"]
     inputs = []
     filters = []
     input_idx = 0
@@ -865,7 +919,11 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
         return JSONResponse(status_code=400, content={"message": "All tracks are muted"})
         
     mix_inputs = "".join([f"[a{i}]" for i in range(input_idx)])
-    filters.append(f"{mix_inputs}amix=inputs={input_idx}:normalize=0:dropout_transition=0:duration=longest[mix]")
+    # Demucs stems are typically quieter than the source; boost after sum then limit/normalize
+    filters.append(
+        f"{mix_inputs}amix=inputs={input_idx}:normalize=0:dropout_transition=0:duration=longest[mixraw]"
+    )
+    filters.append("[mixraw]volume=4dB[mix]")
     
     # Build the post-mix processing chain
     current_label = "mix"
@@ -900,11 +958,80 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
         filters.append(f"[{current_label}]{eq_chain}[{next_label}]")
         current_label = next_label
         label_counter += 1
+
+    # 10-band graphic EQ (1-octave peaking bands)
+    eq_band_freqs = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    eq_bands = params.eq_bands or []
+    geq_parts = []
+    for i, freq in enumerate(eq_band_freqs):
+        try:
+            gain = float(eq_bands[i]) if i < len(eq_bands) else 0.0
+        except (TypeError, ValueError):
+            gain = 0.0
+        if gain != 0:
+            geq_parts.append(f"equalizer=f={freq}:width_type=o:width=1:g={gain}")
+    if geq_parts:
+        next_label = f"geq{label_counter}"
+        filters.append(f"[{current_label}]{','.join(geq_parts)}[{next_label}]")
+        current_label = next_label
+        label_counter += 1
     
+    # Denoise (FFT) — reduce hiss/noise for karaoke / mic-like stems
+    if params.denoise_enabled:
+        next_label = f"dn{label_counter}"
+        filters.append(
+            f"[{current_label}]highpass=f=80,afftdn=nr=12:nf=-50,lowpass=f=14000[{next_label}]"
+        )
+        current_label = next_label
+        label_counter += 1
+
     # Apply Compressor if enabled
     if params.compressor_enabled:
         next_label = f"comp{label_counter}"
         filters.append(f"[{current_label}]acompressor=threshold=-24dB:ratio=4:attack=3:release=250[{next_label}]")
+        current_label = next_label
+        label_counter += 1
+
+    # Light karaoke room reverb
+    if params.reverb_enabled:
+        next_label = f"rv{label_counter}"
+        filters.append(
+            f"[{current_label}]aecho=0.8:0.88:60:0.3[{next_label}]"
+        )
+        current_label = next_label
+        label_counter += 1
+
+    # Light delay (slap-back style for karaoke)
+    if params.delay_enabled:
+        next_label = f"dl{label_counter}"
+        filters.append(
+            f"[{current_label}]aecho=0.8:0.9:180|220:0.25|0.18[{next_label}]"
+        )
+        current_label = next_label
+        label_counter += 1
+
+    # Master volume (matches studio Master Vol)
+    if abs(params.master_volume) > 0.01:
+        next_label = f"mvol{label_counter}"
+        filters.append(f"[{current_label}]volume={params.master_volume}dB[{next_label}]")
+        current_label = next_label
+        label_counter += 1
+
+    # Normalize loudness to streaming/karaoke target (~-14 LUFS)
+    if params.normalize_enabled:
+        next_label = f"norm{label_counter}"
+        filters.append(
+            f"[{current_label}]loudnorm=I=-14:TP=-1.5:LRA=11:linear=true:print_format=summary[{next_label}]"
+        )
+        current_label = next_label
+        label_counter += 1
+
+    # Peak limiter (safety / standalone when normalize off)
+    if params.limiter_enabled:
+        next_label = f"lim{label_counter}"
+        filters.append(
+            f"[{current_label}]alimiter=limit=0.95:attack=5:release=50:level=disabled[{next_label}]"
+        )
         current_label = next_label
         label_counter += 1
     
@@ -953,13 +1080,73 @@ async def download_export(filename: str):
     media_type = "video/mp4" if filename.lower().endswith(".mp4") else "audio/mpeg"
     return FileResponse(filepath, media_type=media_type, filename=filename)
 
-from tab_generator import generate_tab_from_audio
 
+@app.post("/karaoke/recording")
+async def save_karaoke_recording(
+    file: UploadFile = File(...),
+    display_name: str = Form(""),
+    current_user: dict = Depends(get_current_user),
+):
+    """Accept browser karaoke recording (webm/opus) and convert to MP3 for download."""
+    export_dir = os.path.join(app_data, "exports")
+    os.makedirs(export_dir, exist_ok=True)
+
+    base = _safe_export_basename(display_name or os.path.splitext(file.filename or "karaoke")[0])
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    raw_name = f"{base}_{stamp}_rec.webm"
+    out_name = f"{base} karaoke.mp3"
+    raw_path = os.path.join(export_dir, raw_name)
+    out_path = os.path.join(export_dir, out_name)
+
+    try:
+        content = await file.read()
+        if not content:
+            return JSONResponse(status_code=400, content={"message": "File rekaman kosong"})
+        with open(raw_path, "wb") as f:
+            f.write(content)
+
+        cmd = [
+            _ffmpeg_bin(), "-y",
+            "-i", raw_path,
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-b:a", "320k",
+            out_path,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            os.remove(raw_path)
+        except OSError:
+            pass
+
+        return {
+            "status": "success",
+            "download_url": f"/download_export/{quote(out_name)}",
+            "filename": out_name,
+        }
+    except subprocess.CalledProcessError as e:
+        print("Karaoke recording ffmpeg error:", e.stderr.decode("utf-8", errors="replace"))
+        return JSONResponse(status_code=500, content={"message": "Gagal mengonversi rekaman ke MP3"})
+    except Exception as e:
+        print("Karaoke recording error:", e)
+        return JSONResponse(status_code=500, content={"message": str(e)})
+
+# Lazy-import tab_generator: basic_pitch can crash startup if no ML backend is detected.
 tab_status = {}
 
 def run_tab_generator(filepath: str, file_id: str):
     tab_status[file_id] = {"status": "processing", "progress": 10}
     try:
+        # Prefer tensorflow present before basic_pitch picks a default model type
+        try:
+            import tensorflow  # noqa: F401
+        except Exception:
+            try:
+                import onnxruntime  # noqa: F401
+            except Exception:
+                pass
+        from tab_generator import generate_tab_from_audio
+
         tab_dir = os.path.join(app_data, "tabs")
         os.makedirs(tab_dir, exist_ok=True)
         out_filename = f"{file_id}_tab.txt"
@@ -1131,7 +1318,7 @@ def _yt_extract_audio_if_needed(filepath: str, job_id: str):
         return filepath
     out_path = os.path.join(UPLOAD_DIR, f"{job_id}.m4a")
     cmd = [
-        "ffmpeg", "-y", "-i", filepath,
+        _ffmpeg_bin(), "-y", "-i", filepath,
         "-vn", "-c:a", "aac", "-b:a", "192k",
         out_path,
     ]
@@ -1169,6 +1356,7 @@ def run_yt_import(url: str, job_id: str, is_video: bool):
         'no_warnings': True,
         'extractor_args': {'youtube': {'player_client': ['android_vr', 'android', 'ios']}},
         'concurrent_fragment_downloads': 4,
+        **_ydl_ffmpeg_opts(),
     }
     
     if is_video:
@@ -1279,8 +1467,17 @@ def run_yt2mp3_download(url: str, job_id: str):
         'no_warnings': True,
         'extractor_args': {'youtube': {'player_client': ['android_vr', 'android', 'ios']}},
         'concurrent_fragment_downloads': 4,
+        **_ydl_ffmpeg_opts(),
     }
     
+    if not _resolve_ffmpeg_dir():
+        yt2mp3_status[job_id]["status"] = "error"
+        yt2mp3_status[job_id]["error"] = (
+            "FFmpeg tidak ditemukan. Pastikan folder portable utuh "
+            "(ada ffmpeg.exe di dalam folder _internal), lalu buka ulang aplikasi."
+        )
+        return
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             if url.startswith("smartsearch:"):
@@ -1308,7 +1505,13 @@ def run_yt2mp3_download(url: str, job_id: str):
         error_msg = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', str(e))
         print(f"YT2MP3 Error: {error_msg}")
         yt2mp3_status[job_id]["status"] = "error"
-        yt2mp3_status[job_id]["error"] = f"Gagal mengunduh audio: {error_msg}"
+        if 'ffmpeg' in error_msg.lower() or 'ffprobe' in error_msg.lower():
+            yt2mp3_status[job_id]["error"] = (
+                "Gagal mengunduh audio: FFmpeg tidak terdeteksi. "
+                "Pastikan folder portable lengkap (ffmpeg.exe di _internal)."
+            )
+        else:
+            yt2mp3_status[job_id]["error"] = f"Gagal mengunduh audio: {error_msg}"
 
 from tab_scraper import search_tab_data
 

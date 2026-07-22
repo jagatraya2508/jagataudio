@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "9064-E8D4-865C-17CE-0313-6EF6-D001-F999",
+    "license_type": "6m",
+    "customer_name": "Dhedot",
+    "issued_date": "2026-06-29T08:00:40.748759",
+    "expiry_date": "2026-12-26T08:00:40.748759",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "l7Y4bXCg6HVz/NX/buPhKdyZAtmfBKpey7wGdmmOMzkL7LSHqMAbYNEDJSnDQ9H3F3cUSVxLtMsYR8Kp99DHqgbb4Ljbce51BIU6E4vSwQk6bwDQZ6S56/7Rvix6JoCJtIBYX8peBoMgRh/0nSkl908xlHj6fzcdW+X6uPrjGlYFIfUGMQpt5JoNdmlgPFadUYCkaE5t4aTuAb/ZSZ1Ffs+yJvskLBtcnumRzjsTr7+vd/sR0LhRK3iUtq6vEIcSY86F1w+fGGcp4p9t7mTPphwjgW2/iNx/gr9dSpT6oUVF+MP7DSGM4RjuHZrBuWak4liaVoyVF7yo8ZlLgGh6EQ=="
+}

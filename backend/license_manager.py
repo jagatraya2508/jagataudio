@@ -52,49 +52,175 @@ def get_keys_dir():
 # HARDWARE FINGERPRINTING
 # ============================================
 
+_CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+_INVALID_HW_VALUES = {
+    '', 'NONE', 'N/A', 'NA', 'NULL', 'UNDEFINED', 'DEFAULT STRING',
+    'TO BE FILLED BY O.E.M.', 'TO BE FILLED BY OEM.', 'OEM',
+    'SYSTEM SERIAL NUMBER', 'SYSTEM UUID', '0', '00000000',
+    'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF',
+}
+_HWID_CACHE_NAME = 'hwid_components.json'
+_cached_hwid = None  # in-memory cache for current process
+
+
+def _normalize_hw_value(value):
+    """Return stripped value if usable, else None. Preserves original casing for hash stability."""
+    if value is None:
+        return None
+    value = str(value).strip().strip('"').strip("'")
+    if not value:
+        return None
+    if value.upper() in _INVALID_HW_VALUES:
+        return None
+    if value.upper().startswith('UNKNOWN_'):
+        return None
+    return value
+
+
+def _run_powershell(command, timeout=15):
+    """Run a PowerShell command and return stripped stdout."""
+    result = subprocess.run(
+        [
+            'powershell', '-NoProfile', '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass', '-Command', command
+        ],
+        capture_output=True, text=True, timeout=timeout,
+        creationflags=_CREATE_NO_WINDOW
+    )
+    return result.stdout.strip()
+
+
+def _run_wmic(wmic_args, timeout=10):
+    """Run wmic and return the first data line (line after header), or None."""
+    result = subprocess.run(
+        ['wmic'] + wmic_args,
+        capture_output=True, text=True, timeout=timeout,
+        creationflags=_CREATE_NO_WINDOW
+    )
+    lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+    if len(lines) >= 2:
+        return lines[1]
+    return None
+
+
+def _get_windows_machine_guid():
+    """Stable Windows MachineGuid from registry (used only to bind HWID cache)."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SOFTWARE\Microsoft\Cryptography'
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, 'MachineGuid')
+            return _normalize_hw_value(value)
+    except Exception:
+        try:
+            out = _run_powershell(
+                "(Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid"
+            )
+            return _normalize_hw_value(out.splitlines()[0] if out else None)
+        except Exception:
+            return None
+
+
+def _hwid_cache_path():
+    return os.path.join(get_license_dir(), _HWID_CACHE_NAME)
+
+
+def _load_hwid_cache():
+    """Load previously successful hardware components if cache is bound to this PC."""
+    try:
+        path = _hwid_cache_path()
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        cached_guid = data.get('machine_guid')
+        current_guid = _get_windows_machine_guid()
+        # On Windows, require MachineGuid match so cache cannot be copied to another PC
+        if platform.system() == 'Windows':
+            if not cached_guid or not current_guid or cached_guid != current_guid:
+                return None
+        cpu = _normalize_hw_value(data.get('cpu_id'))
+        sys_uuid = _normalize_hw_value(data.get('sys_uuid'))
+        board = _normalize_hw_value(data.get('board_serial'))
+        if cpu and sys_uuid and board:
+            return {'cpu_id': cpu, 'sys_uuid': sys_uuid, 'board_serial': board}
+    except Exception as e:
+        print(f"[License] Warning: Could not load HWID cache: {e}")
+    return None
+
+
+def _save_hwid_cache(cpu_id, sys_uuid, board_serial):
+    """Persist successful hardware components for use when WMI is temporarily unavailable."""
+    try:
+        data = {
+            'cpu_id': cpu_id,
+            'sys_uuid': sys_uuid,
+            'board_serial': board_serial,
+            'machine_guid': _get_windows_machine_guid() or '',
+            'saved_at': datetime.utcnow().isoformat() + 'Z',
+        }
+        with open(_hwid_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[License] Warning: Could not save HWID cache: {e}")
+
+
 def _get_cpu_id():
-    """Get CPU identifier"""
+    """Get CPU identifier (CIM first, then wmic). Returns None if unavailable."""
     try:
         if platform.system() == 'Windows':
-            result = subprocess.run(
-                ['wmic', 'cpu', 'get', 'ProcessorId'],
-                capture_output=True, text=True, timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
-            )
-            lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
-            if len(lines) >= 2:
-                return lines[1]
+            try:
+                out = _run_powershell('@(Get-CimInstance Win32_Processor)[0].ProcessorId')
+                value = _normalize_hw_value(out.splitlines()[0] if out else None)
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: CIM CPU ID failed: {e}")
+            try:
+                value = _normalize_hw_value(_run_wmic(['cpu', 'get', 'ProcessorId']))
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: wmic CPU ID failed: {e}")
         elif platform.system() == 'Linux':
             with open('/proc/cpuinfo', 'r') as f:
                 for line in f:
                     if 'Serial' in line or 'model name' in line:
-                        return line.split(':')[1].strip()
+                        return _normalize_hw_value(line.split(':')[1])
         elif platform.system() == 'Darwin':
             result = subprocess.run(
                 ['sysctl', '-n', 'machdep.cpu.brand_string'],
                 capture_output=True, text=True, timeout=10
             )
-            return result.stdout.strip()
+            return _normalize_hw_value(result.stdout)
     except Exception as e:
         print(f"[License] Warning: Could not get CPU ID: {e}")
-    return "UNKNOWN_CPU"
+    return None
+
 
 def _get_system_uuid():
-    """Get System UUID (Motherboard/BIOS level)"""
+    """Get System UUID (Motherboard/BIOS level). Returns None if unavailable."""
     try:
         if platform.system() == 'Windows':
-            result = subprocess.run(
-                ['wmic', 'csproduct', 'get', 'uuid'],
-                capture_output=True, text=True, timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
-            if len(lines) >= 2:
-                return lines[1]
+            try:
+                out = _run_powershell('(Get-CimInstance Win32_ComputerSystemProduct).UUID')
+                value = _normalize_hw_value(out.splitlines()[0] if out else None)
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: CIM System UUID failed: {e}")
+            try:
+                value = _normalize_hw_value(_run_wmic(['csproduct', 'get', 'uuid']))
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: wmic System UUID failed: {e}")
         elif platform.system() == 'Linux':
             if os.path.exists('/sys/class/dmi/id/product_uuid'):
                 with open('/sys/class/dmi/id/product_uuid', 'r') as f:
-                    return f.read().strip()
+                    return _normalize_hw_value(f.read())
         elif platform.system() == 'Darwin':
             result = subprocess.run(
                 ['system_profiler', 'SPHardwareDataType'],
@@ -102,30 +228,87 @@ def _get_system_uuid():
             )
             for line in result.stdout.split('\n'):
                 if 'UUID' in line:
-                    return line.split(':')[1].strip()
+                    return _normalize_hw_value(line.split(':')[1])
     except Exception as e:
         print(f"[License] Warning: Could not get System UUID: {e}")
-    return "UNKNOWN_UUID"
+    return None
+
 
 def _get_baseboard_serial():
-    """Get Motherboard/Baseboard Serial Number"""
+    """Get Motherboard/Baseboard Serial Number. Returns None if unavailable."""
     try:
         if platform.system() == 'Windows':
-            result = subprocess.run(
-                ['wmic', 'baseboard', 'get', 'serialnumber'],
-                capture_output=True, text=True, timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
-            if len(lines) >= 2:
-                return lines[1]
+            try:
+                out = _run_powershell('(Get-CimInstance Win32_BaseBoard).SerialNumber')
+                value = _normalize_hw_value(out.splitlines()[0] if out else None)
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: CIM Baseboard Serial failed: {e}")
+            try:
+                value = _normalize_hw_value(_run_wmic(['baseboard', 'get', 'serialnumber']))
+                if value:
+                    return value
+            except Exception as e:
+                print(f"[License] Warning: wmic Baseboard Serial failed: {e}")
         elif platform.system() == 'Linux':
             if os.path.exists('/sys/class/dmi/id/board_serial'):
                 with open('/sys/class/dmi/id/board_serial', 'r') as f:
-                    return f.read().strip()
+                    return _normalize_hw_value(f.read())
     except Exception as e:
         print(f"[License] Warning: Could not get Baseboard Serial: {e}")
-    return "UNKNOWN_BOARD"
+    return None
+
+
+def _collect_hardware_components(retries=3, retry_delay=0.5):
+    """
+    Collect CPU / UUID / baseboard with retries and disk cache fallback.
+    Hash formula stays: JAGAT|cpu|uuid|board (compatible with existing licenses).
+    """
+    import time
+
+    cpu_id = sys_uuid = board_serial = None
+
+    for attempt in range(retries):
+        if not cpu_id:
+            cpu_id = _get_cpu_id()
+        if not sys_uuid:
+            sys_uuid = _get_system_uuid()
+        if not board_serial:
+            board_serial = _get_baseboard_serial()
+        if cpu_id and sys_uuid and board_serial:
+            break
+        if attempt < retries - 1:
+            time.sleep(retry_delay)
+
+    # Fill gaps from last successful read (survives WMI race after reboot)
+    if not (cpu_id and sys_uuid and board_serial):
+        cached = _load_hwid_cache()
+        if cached:
+            cpu_id = cpu_id or cached['cpu_id']
+            sys_uuid = sys_uuid or cached['sys_uuid']
+            board_serial = board_serial or cached['board_serial']
+
+    if cpu_id and sys_uuid and board_serial:
+        _save_hwid_cache(cpu_id, sys_uuid, board_serial)
+    else:
+        print(
+            "[License] Warning: Incomplete hardware fingerprint "
+            f"(cpu={bool(cpu_id)}, uuid={bool(sys_uuid)}, board={bool(board_serial)})"
+        )
+
+    return (
+        cpu_id or 'UNKNOWN_CPU',
+        sys_uuid or 'UNKNOWN_UUID',
+        board_serial or 'UNKNOWN_BOARD',
+    )
+
+
+def _format_hardware_id(cpu_id, sys_uuid, board_serial):
+    combined = f"JAGAT|{cpu_id}|{sys_uuid}|{board_serial}"
+    hardware_hash = hashlib.sha256(combined.encode('utf-8')).hexdigest().upper()
+    return '-'.join([hardware_hash[i:i + 4] for i in range(0, 32, 4)])
+
 
 def get_hardware_id():
     """
@@ -134,20 +317,21 @@ def get_hardware_id():
     - System UUID
     - Baseboard Serial Number
     Returns a SHA-256 hash of the combined hardware info.
+
+    Uses CIM/WMI with retries and a MachineGuid-bound component cache so the
+    ID stays stable across reboots when WMI is temporarily unavailable.
     """
-    cpu_id = _get_cpu_id()
-    sys_uuid = _get_system_uuid()
-    board_serial = _get_baseboard_serial()
-    
-    # Combine all hardware identifiers
-    combined = f"JAGAT|{cpu_id}|{sys_uuid}|{board_serial}"
-    
-    # Hash to create a fixed-length, clean identifier
-    hardware_hash = hashlib.sha256(combined.encode('utf-8')).hexdigest().upper()
-    
-    # Format as groups for readability: XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX
-    formatted = '-'.join([hardware_hash[i:i+4] for i in range(0, 32, 4)])
-    
+    global _cached_hwid
+    if _cached_hwid:
+        return _cached_hwid
+
+    cpu_id, sys_uuid, board_serial = _collect_hardware_components()
+    formatted = _format_hardware_id(cpu_id, sys_uuid, board_serial)
+
+    # Only memoize when fingerprint is complete (avoid locking in UNKNOWN_* state)
+    if 'UNKNOWN_' not in f'{cpu_id}|{sys_uuid}|{board_serial}':
+        _cached_hwid = formatted
+
     return formatted
 
 
@@ -231,9 +415,16 @@ DURATION_MAP = {
     '1menit': 1/(24*60),
     '1jam': 1/24,
     '1hari': 1,
-    '3m': 90,      # 3 months (~90 days)
-    '6m': 180,     # 6 months (~180 days)
-    '1y': 365,     # 1 year
+    '1minggu': 7,   # 1 week
+    '7hari': 7,
+    '14hari': 14,   # 2 weeks
+    '1m': 30,       # 1 month (~30 days)
+    '1bulan': 30,
+    '2m': 60,       # 2 months (~60 days)
+    '2bulan': 60,
+    '3m': 90,       # 3 months (~90 days)
+    '6m': 180,      # 6 months (~180 days)
+    '1y': 365,      # 1 year
     '3bulan': 90,
     '6bulan': 180,
     '1tahun': 365,

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "4C7E-E318-2D0A-465B-0947-9E6D-0CA0-41A7",
+    "license_type": "1m",
+    "customer_name": "Wanze",
+    "issued_date": "2026-07-22T02:04:07.429554",
+    "expiry_date": "2026-08-21T02:04:07.429554",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "W0LlqRL52jKiT+bGo1DDgUKF9ed9ilB4Jx5Gr7/kO6XHXF6eKTXB0X8ARdRfRa2Sp/71Xi3CXyYALceHkFK7/l7mpqWJeQFSMvDBx0xTz9Hu3vZWFCASdgAtYJ5APkGXHMplXsOBPVAbCJSOfvqCzaMfnFpuOcyBB2xRen5IqVm0g6yPEYVF/b1YWL/RFMU0UIn9RqorBwGdgPv5uUVRnkJgpZoz61LKrU/gW6H0lkski0qUtp2TISgFo51soTix840sWALkXGdjLPOq9b8oXmInaJ5Ys70VJaDZ69UHCwh8SmbrWW/utCB46cF5kcNoKyWq6+b+SOEnfseH/OZ5vQ=="
+}

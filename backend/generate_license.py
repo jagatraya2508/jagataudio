@@ -11,12 +11,16 @@ Usage:
   python generate_license.py --show-hwid                   # Show this machine's Hardware ID
 
 Duration options:
-  1menit        = 1 menit (untuk testing)
-  1jam          = 1 jam (untuk testing)
-  1hari         = 1 hari (untuk testing)
-  3m / 3bulan   = 3 bulan (90 hari)
-  6m / 6bulan   = 6 bulan (180 hari)
-  1y / 1tahun   = 1 tahun (365 hari)
+  1menit           = 1 menit (untuk testing)
+  1jam             = 1 jam (untuk testing)
+  1hari            = 1 hari (untuk testing)
+  1minggu / 7hari  = 1 minggu (7 hari)
+  14hari           = 14 hari
+  1m / 1bulan      = 1 bulan (30 hari)
+  2m / 2bulan      = 2 bulan (60 hari)
+  3m / 3bulan      = 3 bulan (90 hari)
+  6m / 6bulan      = 6 bulan (180 hari)
+  1y / 1tahun      = 1 tahun (365 hari)
 """
 
 import argparse
@@ -66,7 +70,7 @@ Contoh penggunaan:
     parser.add_argument('--hardware-id', type=str,
                        help='Hardware ID target (dari komputer customer)')
     parser.add_argument('--duration', type=str, choices=list(DURATION_MAP.keys()),
-                       help='Durasi lisensi: 1menit, 1jam, 1hari, 3m, 6m, 1y, 3bulan, 6bulan, 1tahun')
+                       help='Durasi: 1menit, 1jam, 1hari, 1minggu, 14hari, 1m, 2m, 3m, 6m, 1y, ...')
     parser.add_argument('--name', type=str, default='',
                        help='Nama customer (opsional)')
     parser.add_argument('--validate', type=str, metavar='FILE',

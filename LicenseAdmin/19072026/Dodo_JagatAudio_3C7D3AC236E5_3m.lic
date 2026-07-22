@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "3C7D-3AC2-36E5-5B82-BEBC-24F4-23E6-20F4",
+    "license_type": "3m",
+    "customer_name": "Dodo",
+    "issued_date": "2026-06-30T08:46:34.944964",
+    "expiry_date": "2026-09-28T08:46:34.944964",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "B4GQt8MWvjw5HQU92tQklZm/itHpO2f804FAVd3mbJQx/FmeWWdu3dlBO++tLjCF6DdxNbrOCde9vnj+YXk4Ykg6pCnWXOBS6vMEgSlpnHZsMwpLomw3q6UCQiN8C6OKsozLuGolNTXUSMr4l6NJsaLZPO0ssDr5ymHFVrPB108xEYKqb1BpgMQUqPhTnx136jW06VPY8OChtLbA2W41dBPY7bqw1H9x4Hu3L3JAZAkBZTIEG8PRKOyVD+zYhqMZl+q63QD2vZ0jqmBNJ4+q7sEcDezX3tUpwnmzdL/0sjgsEG7dhVpSI6dgX8Yrudg1DMDKx/xo+TsJ/AGY7r70Vg=="
+}

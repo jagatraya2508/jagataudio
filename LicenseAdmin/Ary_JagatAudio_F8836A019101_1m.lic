@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F883-6A01-9101-832A-DCFB-D609-8D2A-7B46",
+    "license_type": "1m",
+    "customer_name": "Ary",
+    "issued_date": "2026-07-20T10:16:08.004694",
+    "expiry_date": "2026-08-19T10:16:08.004694",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "HX67hr80V83RrSXORMxQd14bheB9xjaA9q7uqf/sMJb1s705jsxHBKrMCRw4JN/Brrh92hh6fXn0qg6OQQCIfL6lb/Jd1wyuemmlTwYEpR39+px7D6Et5wRQiu8eWBqgzGB+Aiok0zy1Bb296171vTATm/F7jf5u/Sr6IDoWMsDdhMpz4ssu5FGOFlSyHT3a79f7Qrnuq2jlc0mX8BoqoZ6icSZvwy4jH2CrN8aI4xAcNVzkljqxdIQC+N0734WA0+bT+eKLL5HNFql77dnotaJk3B2fqrPcWxFmhwRJuZ/5zEThvhHBBWDMG5yc6N01y3r0WAro3fP2kODO6ebfgw=="
+}

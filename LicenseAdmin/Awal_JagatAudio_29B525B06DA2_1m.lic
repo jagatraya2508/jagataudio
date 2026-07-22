@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "29B5-25B0-6DA2-EDEB-0650-C56D-9F4A",
+    "license_type": "1m",
+    "customer_name": "Awal",
+    "issued_date": "2026-07-21T02:00:18.851176",
+    "expiry_date": "2026-08-20T02:00:18.851176",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "cyk+LYeJ9CoFioXcMrzt7w8kBzFmKCnGO4Re+8MxtnmayEU0WutthFC3X9ifCnB3QZw9JDaUTIII80xJU7hz1it07c//7tJXFHp6fvlY5xrt+IcZbtyznpMuS1WAFKE8qY4ET7xb7cCoj6FLDGBMLQAMDlsdZWyIvF/GTh1uIPj10r1+HQoJJSLKbKJS0aHgBstgDvrOibJx2ogYhWCHvI3PiZer4FgUhxwToea30m4+0nBevAXYlVzx+d1B6ypXFyai/Z+/1h5sXXrADUqKLJ6G9LsSJw+zKfSqGMWPQuxBYE/XfQzk4ufde028snu0piZBSONrxVIPggEdwqUEbA=="
+}

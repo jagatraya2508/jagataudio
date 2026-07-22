@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F9EA-0337-40D0-CA4B-C800-9E81-7435-68A0",
+    "license_type": "3m",
+    "customer_name": "BIntang2",
+    "issued_date": "2026-07-18T02:44:05.146208",
+    "expiry_date": "2026-10-16T02:44:05.146208",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "WF4XWzjWuxxn1f2ZLuvYPX2Gku7jXN3ejQEvndX1YB1ivReY7UEW5A3YfbcRv/p628ROj5jzwcFb1MGiVfI/gPxcb+dEGlfJ0MJ2ByBvhRO53US9IJm1kitdBdwfh60knAg40nQcZqsmWXtYgmWkWwJBv4FBDN3n4CDa/mqGGtb4DVXPLf1nmNb/oQdb7MtylusLdBmAFTvdVSOILgEs8cNA5MT2yO2O+LpwLqMt4diF52ZcpS8dolkBSzem8YXwgBZXstvgwDDpFUHcDCDD7lZ1wll4erx16zIGHJFEl+BiOtWb25fPKrYxhB7+IWjRPUri4EewbJP5IXvNHbtjGw=="
+}

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "0D0A-C97A-CEA9-B0D6-C1CB-F806-6B24-749B",
+    "license_type": "3m",
+    "customer_name": "1wardana",
+    "issued_date": "2026-07-18T02:02:31.724873",
+    "expiry_date": "2026-10-16T02:02:31.724873",
+    "product": "JagatAudio",
+    "version": "1.0"
+  },
+  "signature": "hQIhTOOMPuO+DdxEjkFoH6C2B7d62qghZIncR83/VG2vHdcQsNFq07aDR8BuL1SZ8SeNrWtve1WJDHrzLHuMVoTmHUySwGWEd0m0mcZ/1oUtjdmk34qDq2+wYN+r9jANuVv3ZGo/+hNpLxIX7jqsv5PRzlCeyh5b9VcGGkNjZ2biKqyW/TGtL6jkYbbAIKz25lFGDj4Oi8U6PBigrz8SVRVYgqxIVflK+owmGQcjF7PQXet1ive6WeEkYMYpKWlvEWglzQ37Fw+u1Q5YzJIXbx4H9703MGNYYeZHhxoiLJxVuF7UY5Yibx6UuJLgv8swmGxdQ6TdILmGpN8ZLZW7DQ=="
+}

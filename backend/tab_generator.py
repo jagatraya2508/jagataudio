@@ -1,10 +1,22 @@
 import os
-from basic_pitch.inference import predict
 import mido
+
+def _load_basic_pitch_predict():
+    """Import basic_pitch only when needed; preload an ML backend first."""
+    for mod_name in ("tensorflow", "onnxruntime"):
+        try:
+            __import__(mod_name)
+            break
+        except Exception as e:
+            print(f"basic_pitch backend '{mod_name}' unavailable: {e}")
+    from basic_pitch.inference import predict
+    return predict
+
 
 def generate_tab_from_audio(audio_path, output_txt_path):
     print(f"Generating tab for {audio_path}...")
     try:
+        predict = _load_basic_pitch_predict()
         # Run basic-pitch inference
         model_output, midi_data, note_events = predict(audio_path)
         

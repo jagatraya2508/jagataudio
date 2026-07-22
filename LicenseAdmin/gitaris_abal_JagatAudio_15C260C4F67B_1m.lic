@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "15C2-60C4-F67B-EB61-B30B-6F0F-C452-EC97",
+    "license_type": "1m",
+    "customer_name": "gitaris abal",
+    "issued_date": "2026-07-22T02:23:35.562073",
+    "expiry_date": "2026-08-21T02:23:35.562073",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "MM7AlAjKzVs984kBuijIvyFbk7Cg1LMygBIu9fUIUwV0cFOEytuCtsioIDpzUKDPxNaROHqTYv+Ol2+OvAs6rpd+T2SLWZVeOiIRpGN5k5hQtSZgjtiqSL3rNVYIMNnz5oiHKYRJOZveBwUtoiy/aVObuw8SsaOd5hKN3ZPw27kOykkMnSgP99R71H80jQXu/BjyD6WCO9uQJ8Fg+E5T16bcDwnSq0TT0M2DTToPa5KsxIYtgEW88RBkfvmb9xNo4TsNVm/shbCRS3m1X8i/7aZzCAkNYF3nQvaNUuYUVOIXLcP522bLxiGG1Fmv671xoMjBcES4vwnbTLouU94t5Q=="
+}

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "25DB-97AA-6C53-FDC8-A27D-AE4C-3D07-7DFD",
+    "license_type": "1m",
+    "customer_name": "asatmoto",
+    "issued_date": "2026-07-21T07:28:22.547482",
+    "expiry_date": "2026-08-20T07:28:22.547482",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "W2AyKXvtbVY8a6dVPefiDE3zeIbfQVCrg53h7z9OlyWdyYgdaHU/wPQmaz7Q8hTl1ETEwVB5xoFPcVn0CoGIe9bl6YJAHYmqiaUQzQ57wnhK3amWXVMWCO3kbJ3eZcGXDcaEc3cdBqSE8aI4farkJBQVh8freKCvrr38/qcmg2qBaNtSV/36aafR4PvodW0CTEz41rfJ+9AVbq8QlHz/djUoX7EB1n6B/Um7ZEpJMT00LUED2p8Czc1/2j5eUMIAQODZAr7K+SBd2eM+v2VnX0S5cpo7rL4lKEoj3hfHwXI3M/G+KPupBdREMpaMuuzghK+8wfPw4b57XUxb04i1Fw=="
+}

@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "E28E-BBD6-1F30-2D68-A416-48FB-5911-3E59",
+    "license_type": "1m",
+    "customer_name": "Panca",
+    "issued_date": "2026-07-22T02:05:54.537802",
+    "expiry_date": "2026-08-21T02:05:54.537802",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "m1h/hyFmqITnR1ZpZGTHn5fZNjOJuQqpMPx487QvKrMHhxQVS9dKrulgWRoefxGlppRTob9QYZdtEofCG7S4zQAK1R5sPsF+oMza/Xcf8PKzMVYqWco06dA9qEjc8bTv49BEt7OIicjHuQ53Oj/gHvlfPHNC5NlNYHZdKb/hTiO7Ev2wU3i9756aqVqs8VMBDvzPg3AMJH2sYqgDdBEEqTXqfA621QqqTmwA5SUgiZ9JxuEvKetS07469kE987/EK1lgv1MQ1km1XzdauUCAmJJQflw2utlwpj+lvL3aJS+LPPVvpPU7wnju+U9CWGRd9AJTbcBRtnKicmrBmdSg3g=="
+}
