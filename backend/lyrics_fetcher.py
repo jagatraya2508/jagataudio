@@ -114,6 +114,26 @@ def _http_get_json(url: str, timeout: int = 15) -> list | dict | None:
         return None
 
 
+def _count_synced_lines(result: dict) -> int:
+    """Count timed lyric lines that have actual text (measure completeness)."""
+    syn = result.get("syncedLyrics") or ""
+    if not syn:
+        return 0
+    count = 0
+    for raw in syn.splitlines():
+        line = raw.strip()
+        if not line.startswith("["):
+            continue
+        # skip metadata tags
+        if re.match(r"^\[(?:ti|ar|al|by|offset|length|re|ve|au|la|tool|key|bpm|language):", line, re.I):
+            continue
+        # [mm:ss.xx]text — require some lyric text
+        m = re.match(r"^\[\d{1,2}:\d{2}(?:[\.:]\d{1,3})?\]\s*(.*)$", line)
+        if m and (m.group(1) or "").strip():
+            count += 1
+    return count
+
+
 def _pick_best_result(results: list, duration: int | None, artist: str = "", title: str = "") -> dict | None:
     if not results:
         return None
@@ -122,7 +142,7 @@ def _pick_best_result(results: list, duration: int | None, artist: str = "", tit
         has_sync = bool(r.get("syncedLyrics"))
         has_plain = bool(r.get("plainLyrics"))
         if not has_sync and not has_plain:
-            return (999, 999, 999)
+            return (999, 999, 999, 999)
 
         dur_diff = 999
         if duration and duration > 0:
@@ -138,10 +158,17 @@ def _pick_best_result(results: list, duration: int | None, artist: str = "", tit
 
         # Prefer synced; penalize duration mismatch heavily when duration is known
         sync_penalty = 0 if has_sync else 5
-        if duration and duration > 0 and dur_diff > 4:
-            dur_diff += 20
+        if duration and duration > 0 and dur_diff > 30:
+            # likely different song / edit length — soft penalty (cover may be longer)
+            dur_diff = dur_diff + 15
+        elif duration and duration > 0 and dur_diff > 4:
+            dur_diff = dur_diff + 5
 
-        return (sync_penalty, name_bonus, dur_diff)
+        # Prefer more complete synced lyrics (more timed lines with text)
+        line_count = _count_synced_lines(r) if has_sync else 0
+        completeness = -line_count  # min() → more lines wins
+
+        return (sync_penalty, name_bonus, completeness, dur_diff)
 
     synced = [r for r in results if r.get("syncedLyrics")]
     candidates = synced if synced else [r for r in results if r.get("syncedLyrics") or r.get("plainLyrics")]
@@ -213,18 +240,44 @@ def fetch_lyrics_online(track_name: str, duration: int | None = None) -> dict | 
     artist, title = parse_track_name(track_name)
     print(f"[Lyrics] Search: artist={artist!r} title={title!r} duration={duration}")
 
-    # Exact match with duration first (best for synced LRC)
-    found = _fetch_lrclib_get(artist, title, duration)
-    if found:
-        found["search_artist"] = artist
-        found["search_title"] = title
-        return found
+    # Kumpulkan semua kandidat lalu pilih yang paling lengkap (bukan langsung return get)
+    pooled: list[dict] = []
+    seen_ids: set = set()
+
+    def _add(item: dict | None):
+        if not isinstance(item, dict):
+            return
+        rid = item.get("id")
+        if rid is not None:
+            if rid in seen_ids:
+                return
+            seen_ids.add(rid)
+        pooled.append(item)
+
+    if artist and title:
+        params = {"artist_name": artist, "track_name": title}
+        if duration and duration > 0:
+            params["duration"] = int(duration)
+        data = _http_get_json(f"https://lrclib.net/api/get?{urllib.parse.urlencode(params)}")
+        _add(data if isinstance(data, dict) else None)
 
     for query in build_search_queries(artist, title):
-        found = _fetch_lrclib_search(query, duration, artist, title)
+        encoded = urllib.parse.quote(query)
+        results = _http_get_json(f"https://lrclib.net/api/search?q={encoded}")
+        if isinstance(results, list):
+            for r in results:
+                _add(r)
+
+    best = _pick_best_result(pooled, duration, artist, title)
+    if best:
+        found = _result_to_lyrics(best, artist, title, "lrclib")
         if found:
             found["search_artist"] = artist
             found["search_title"] = title
+            print(
+                f"[Lyrics] Picked: {best.get('artistName')!r} - {best.get('trackName')!r} "
+                f"({_count_synced_lines(best)} baris sync)"
+            )
             return found
 
     found = _fetch_lyrics_ovh(artist, title)
@@ -298,6 +351,7 @@ def search_lyrics_candidates(
             if not r.get("syncedLyrics") and not r.get("plainLyrics"):
                 continue
             seen_ids.add(rid)
+            line_count = _count_synced_lines(r)
             candidates.append({
                 "id": rid,
                 "artist": r.get("artistName") or "",
@@ -306,14 +360,17 @@ def search_lyrics_candidates(
                 "duration": r.get("duration"),
                 "has_sync": bool(r.get("syncedLyrics")),
                 "has_plain": bool(r.get("plainLyrics")),
+                "synced_lines": line_count,
             })
 
     def sort_key(c: dict) -> tuple:
         sync_penalty = 0 if c.get("has_sync") else 1
+        # lebih banyak baris = lebih lengkap
+        completeness = -(c.get("synced_lines") or 0)
         dur_diff = 999
         if duration and duration > 0 and c.get("duration"):
             dur_diff = abs(c["duration"] - duration)
-        return (sync_penalty, dur_diff)
+        return (sync_penalty, completeness, dur_diff)
 
     candidates.sort(key=sort_key)
     return candidates[:limit]

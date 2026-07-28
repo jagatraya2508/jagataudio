@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F1C5-0C55-B6CE-CBE8-694C-73E5-A03E-BFE6",
+    "license_type": "1m",
+    "customer_name": "Dipa",
+    "issued_date": "2026-07-23T08:33:00.882495",
+    "expiry_date": "2026-08-22T08:33:00.882495",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "Q8miZLU31TeTPsRdhtTpcdPCWxxDAQaYGL/6/y9ws1VogEqF/EjH/kOIqKoLcF7ipJ1ZcIcNSAqQVFQ17LBjEOTLpCHh+8LzA/eZAKbJTg9a+LBAKe6VkBJC7YyXoU29XZo1eC/JfQtGp/pPQu/xrC6q3h3/H5DqRWjkIzKnco5tBmYAGslVaD2FWU01amMNgwm1E7D0j4KO5gxCRtb2KO76mGdy+a5gnr6ZSW+VhEQtxntVEm35umK/cOZqPqyI+GBbtaw1RJ8ludMokQYekpMMMgIWiHtwVAgJX3aHA9TXsMXFFrakIRyc/VmoNwgwhkI6GyIx3+Orw1i4cd3wZA=="
+}

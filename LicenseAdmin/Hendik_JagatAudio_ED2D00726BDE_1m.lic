@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "ED2D-0072-6BDE-56AD-8791-0E92-6193-A7EF",
+    "license_type": "1m",
+    "customer_name": "Hendik",
+    "issued_date": "2026-07-23T06:17:36.689711",
+    "expiry_date": "2026-08-22T06:17:36.689711",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "dD8/MSuRdaqbnP1UsowBgfPgqM5FAMuVYDDnGQLj0ehI/Uj5KCHXXz9QmQihqQLLh8XwRbgJibA8XgVjDgf9MeyOH2/k9JbRyQQyluYtpimD7zXHC95IoaFxop9V0qr0vN6h1wk5rMElPvEk2TzBYxhEtROG1O4aUuLFeM1j6j0C9u6/LRpDIjqqTOn0IjimiP0caHzXZRIWyzVKfWI4D8DwzVW9fyazcqORmHodA9b+vHzRr5963dG7lRE/7YTt1P3llTjabX4HUp7La2pS/vuQexBQ+J5IBOy5f+n+0FDAWrBmZk+Sz+2r8NIdKHddBu9tl7SXpt4eoZJkLd60uQ=="
+}

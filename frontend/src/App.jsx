@@ -3,7 +3,11 @@ import * as Tone from 'tone';
 import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle } from 'lucide-react';
 import './index.css';
 
-const API_BASE_URL = `http://${window.location.hostname}:8000`;
+// Production (JagatAudio.exe): API & UI one origin → ikut port otomatis.
+// Dev (Vite): backend default 8000 (atau VITE_API_PORT).
+const API_BASE_URL = import.meta.env.DEV
+  ? `http://${window.location.hostname}:${import.meta.env.VITE_API_PORT || 8000}`
+  : '';
 
 const isVideoFile = (name) => /\.(mp4|mov|avi|mkv|webm)$/i.test(name || '');
 
@@ -12,11 +16,14 @@ const EQ_BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const EQ_BAND_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
 const flatEqBands = () => EQ_BAND_FREQS.map(() => 0);
 
-/** Larger grains = smoother pitch on chords/polyphony (slightly more smear). */
-const grainSizeForPitch = (semitones) => Math.min(0.28, 0.16 + Math.abs(semitones) * 0.012);
+/** Saat pitch=0, grain besar (≈2s) agar GrainPlayer berperilaku seperti Player biasa (tanpa artefak).
+ *  Saat pitch digeser, grain mengecil untuk pitch-shifting yang halus. */
+const grainSizeForPitch = (semitones) => {
+  const abs = Math.abs(Number(semitones) || 0);
+  if (abs < 0.1) return 2.0; // pitch normal → grain besar, tanpa artefak
+  return Math.min(0.28, 0.16 + abs * 0.012);
+};
 const GRAIN_OVERLAP = 0.1;
-/** GrainPlayer at pitch=0 causes volume pumping; use normal Player unless pitch-shifted. */
-const needsGrainPitch = (semitones) => Math.abs(Number(semitones) || 0) >= 0.5;
 
 const LRC_TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]/g;
 
@@ -94,12 +101,57 @@ function audioToLyricTimeline(currentTime, offsetMs = 0, speedPct = 100) {
   return (currentTime + offsetMs / 1000) * (speedPct / 100);
 }
 
+/** Lirik maju sedikit lebih dulu agar tidak terasa "kejar" vokal. */
+const LYRIC_LOOKAHEAD_SEC = 0.2;
+
+/** Inverse of audioToLyricTimeline — lyric line time → media seconds for burn-in. */
+function lyricTimelineToMedia(lyricTime, offsetMs = 0, speedPct = 100) {
+  const speed = (Number(speedPct) || 100) / 100;
+  return lyricTime / speed - (Number(offsetMs) || 0) / 1000;
+}
+
+function buildKaraokeVideoCues(lines, offsetMs = 0, speedPct = 100) {
+  if (!lines?.length) return [];
+  // Harus inverse persis dari getLyricSyncState (termasuk lookahead).
+  // Jangan kurangi LOOKAHEAD di domain media — salah jika speed ≠ 100%.
+  return lines
+    .map((line) => {
+      const start = Math.max(
+        0,
+        lyricTimelineToMedia(line.time - LYRIC_LOOKAHEAD_SEC, offsetMs, speedPct)
+      );
+      const endRaw = line.endTime != null
+        ? lyricTimelineToMedia(line.endTime - LYRIC_LOOKAHEAD_SEC, offsetMs, speedPct)
+        : start + 5;
+      const end = Math.max(start + 0.35, endRaw);
+      return { start, end, text: (line.text || '').trim() };
+    })
+    .filter((c) => c.text);
+}
+
+function lineHasUsableWordTimings(line) {
+  const words = line?.words;
+  if (!words || words.length < 2) return false;
+  let gapSum = 0;
+  let gaps = 0;
+  for (let i = 1; i < words.length; i++) {
+    const g = words[i].time - words[i - 1].time;
+    if (g > 0) {
+      gapSum += g;
+      gaps += 1;
+    }
+  }
+  if (!gaps) return false;
+  // Gap terlalu kecil = word-sync "kejar-kejaran", tampilkan per baris saja
+  return (gapSum / gaps) >= 0.14;
+}
+
 function getLyricSyncState(lines, currentTime, offsetMs = 0, speedPct = 100) {
   if (!lines?.length) {
     return { activeIndex: -1, progress: 0, activeWordIndex: -1, wordProgress: 0 };
   }
 
-  const t = audioToLyricTimeline(currentTime, offsetMs, speedPct);
+  const t = audioToLyricTimeline(currentTime, offsetMs, speedPct) + LYRIC_LOOKAHEAD_SEC;
 
   let active = -1;
   let lo = 0;
@@ -122,9 +174,11 @@ function getLyricSyncState(lines, currentTime, offsetMs = 0, speedPct = 100) {
     const line = lines[active];
     const start = line.time;
     const end = line.endTime ?? (active < lines.length - 1 ? lines[active + 1].time : start + 6);
-    progress = end > start ? Math.min(1, Math.max(0, (t - start) / (end - start))) : 0;
+    const span = end - start;
+    // Span sangat pendek → progress melonjak; ratakan agar tidak "balapan"
+    progress = span > 0.05 ? Math.min(1, Math.max(0, (t - start) / span)) : 0;
 
-    if (line.words?.length > 1) {
+    if (lineHasUsableWordTimings(line)) {
       let wordIdx = -1;
       for (let w = 0; w < line.words.length; w++) {
         if (line.words[w].time <= t) wordIdx = w;
@@ -163,36 +217,6 @@ function formatDurationSec(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function createMp3AudioEngine(audioElement) {
-  const toneCtx = Tone.getContext();
-  const raw = toneCtx.rawContext;
-
-  const source = toneCtx.createMediaElementSource(audioElement);
-  const master = raw.createGain();
-  master.gain.value = 1;
-  master.connect(raw.destination);
-
-  const pitchShift = new Tone.PitchShift({
-    pitch: 0,
-    windowSize: 0.08,
-    delayTime: 0.03,
-    feedback: 0,
-    wet: 1,
-  });
-  Tone.connect(source, pitchShift);
-  Tone.connect(pitchShift, master);
-
-  return {
-    setPitch(semitones) {
-      pitchShift.pitch = semitones;
-    },
-    dispose() {
-      try { pitchShift.disconnect(); pitchShift.dispose(); } catch { /* ignore */ }
-      master.disconnect();
-    },
-  };
-}
-
 const INSTRUMENTS = [
   { id: 'vocals', label: 'Vokal', icon: Mic2, color: '#ff477e' },
   { id: 'drums', label: 'Drum', icon: Drum, color: '#ff9f1c' },
@@ -201,6 +225,249 @@ const INSTRUMENTS = [
   { id: 'piano', label: 'Piano', icon: Music, color: '#8338ec' },
   { id: 'other', label: 'Lainnya', icon: Settings2, color: '#9d4edd' }
 ];
+
+const MIC_ECHO_TIME = 0.22;
+const MIC_ECHO_FEEDBACK = 0.28;
+const MIC_ECHO_WET_MAX = 0.45;
+const MIC_REVERB_WET_MAX = 0.55;
+const MIC_CHORUS_WET_MAX = 0.7;
+const MIC_CRUSH_WET_MAX = 0.65;
+
+/** Preset Voice Effect khusus mic karaoke (monitor + rekaman). */
+const MIC_VOICE_PRESETS = {
+  off: {
+    label: 'Natural',
+    reverb: 0,
+    echoOn: false,
+    echo: 0,
+    pitch: 0,
+    chorus: 0,
+    crush: 0,
+    filter: 'none',
+  },
+  hall: {
+    label: 'Hall',
+    reverb: 50,
+    echoOn: true,
+    echo: 18,
+    pitch: 0,
+    chorus: 0,
+    crush: 0,
+    filter: 'none',
+  },
+  echo: {
+    label: 'Echo',
+    reverb: 12,
+    echoOn: true,
+    echo: 60,
+    pitch: 0,
+    chorus: 0,
+    crush: 0,
+    filter: 'none',
+  },
+  radio: {
+    label: 'Radio',
+    reverb: 8,
+    echoOn: false,
+    echo: 0,
+    pitch: 0,
+    chorus: 0,
+    crush: 0,
+    filter: 'radio',
+  },
+  robot: {
+    label: 'Robot',
+    reverb: 22,
+    echoOn: true,
+    echo: 25,
+    pitch: 0,
+    chorus: 35,
+    crush: 60,
+    filter: 'robot',
+  },
+  chipmunk: {
+    label: 'Chipmunk',
+    reverb: 18,
+    echoOn: true,
+    echo: 15,
+    pitch: 6,
+    chorus: 10,
+    crush: 0,
+    filter: 'none',
+  },
+  deep: {
+    label: 'Deep',
+    reverb: 22,
+    echoOn: true,
+    echo: 12,
+    pitch: -5,
+    chorus: 15,
+    crush: 0,
+    filter: 'none',
+  },
+  thick: {
+    label: 'Thick',
+    reverb: 28,
+    echoOn: true,
+    echo: 22,
+    pitch: 0,
+    chorus: 55,
+    crush: 0,
+    filter: 'none',
+  },
+};
+
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+function hzToMidi(hz) {
+  return 69 + 12 * Math.log2(hz / 440);
+}
+
+function midiToNoteName(midi) {
+  if (!Number.isFinite(midi)) return '--';
+  const rounded = Math.round(midi);
+  const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
+  const octave = Math.floor(rounded / 12) - 1;
+  return `${name}${octave}`;
+}
+
+/** Autocorrelation pitch detect (80–900 Hz). Returns Hz or null. */
+function detectPitchHz(wave, sampleRate) {
+  if (!wave || wave.length < 64) return null;
+  let rms = 0;
+  for (let i = 0; i < wave.length; i += 1) rms += wave[i] * wave[i];
+  rms = Math.sqrt(rms / wave.length);
+  if (rms < 0.01) return null;
+
+  const minLag = Math.floor(sampleRate / 900);
+  const maxLag = Math.min(Math.floor(sampleRate / 80), wave.length - 1);
+  if (maxLag <= minLag) return null;
+
+  let bestLag = -1;
+  let bestCorr = 0;
+  for (let lag = minLag; lag <= maxLag; lag += 1) {
+    let corr = 0;
+    let normA = 0;
+    let normB = 0;
+    const n = wave.length - lag;
+    for (let i = 0; i < n; i += 1) {
+      const a = wave[i];
+      const b = wave[i + lag];
+      corr += a * b;
+      normA += a * a;
+      normB += b * b;
+    }
+    const denom = Math.sqrt(normA * normB) || 1;
+    const score = corr / denom;
+    if (score > bestCorr) {
+      bestCorr = score;
+      bestLag = lag;
+    }
+  }
+  if (bestLag < 0 || bestCorr < 0.85) return null;
+  return sampleRate / bestLag;
+}
+
+/** Diff in cents, wrapped to nearest octave (-600..+600). Positive = mic higher. */
+function pitchDiffCents(micHz, refHz) {
+  if (!micHz || !refHz) return null;
+  let cents = 1200 * Math.log2(micHz / refHz);
+  while (cents > 600) cents -= 1200;
+  while (cents < -600) cents += 1200;
+  return cents;
+}
+
+function parseNumericInput(raw, { min, max, allowInf = false, infValue = min } = {}) {
+  const text = String(raw ?? '').trim().replace(/\s*(dB|LUFS)\s*$/i, '').replace(',', '.');
+  if (!text) return null;
+  if (allowInf && (/^-?(∞|inf|infinity)$/i.test(text) || text === '-')) return infValue;
+  const parsed = parseFloat(text.replace(/^\+/, ''));
+  if (Number.isNaN(parsed)) return null;
+  let next = parsed;
+  if (typeof min === 'number') next = Math.max(min, next);
+  if (typeof max === 'number') next = Math.min(max, next);
+  return Math.round(next);
+}
+
+function EditableValue({
+  value,
+  onCommit,
+  min,
+  max,
+  unit = '',
+  formatDisplay,
+  formatEdit,
+  parseInput,
+  className = '',
+  style,
+  title = 'Ketik nilai lalu Enter',
+  ariaLabel,
+  allowInf = false,
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
+  const skipBlurRef = useRef(false);
+
+  const display = formatDisplay
+    ? formatDisplay(value)
+    : `${value > 0 ? '+' : ''}${value}`;
+
+  const commit = (raw) => {
+    const next = parseInput
+      ? parseInput(raw)
+      : parseNumericInput(raw, { min, max, allowInf, infValue: min });
+    if (next == null) {
+      setEditing(false);
+      setText('');
+      return;
+    }
+    onCommit(next);
+    setEditing(false);
+    setText('');
+  };
+
+  return (
+    <span className={`editable-value ${className}`.trim()} style={style}>
+      <input
+        type="text"
+        inputMode="decimal"
+        className="editable-value-input"
+        title={title}
+        aria-label={ariaLabel}
+        value={editing ? text : display}
+        onFocus={(e) => {
+          const editText = formatEdit
+            ? formatEdit(value)
+            : (allowInf && value <= min ? String(min) : String(value).replace(/^\+/, ''));
+          setEditing(true);
+          setText(editText);
+          e.target.select();
+        }}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={(e) => {
+          if (skipBlurRef.current) {
+            skipBlurRef.current = false;
+            setEditing(false);
+            setText('');
+            return;
+          }
+          commit(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.currentTarget.blur();
+          } else if (e.key === 'Escape') {
+            skipBlurRef.current = true;
+            setEditing(false);
+            setText('');
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      {unit ? <span className="editable-value-unit">{unit}</span> : null}
+    </span>
+  );
+}
 
 function App() {
   // Tab navigation
@@ -215,6 +482,8 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [players, setPlayers] = useState({});
   const [volumes, setVolumes] = useState({});
+  const [volumeDbEdit, setVolumeDbEdit] = useState({ id: null, text: '' });
+  const volumeDbSkipBlurRef = useRef(false);
   const [mutes, setMutes] = useState({});
   const [pans, setPans] = useState({});
   const [pitch, setPitch] = useState(0); // -12 to 12 semitones
@@ -249,18 +518,21 @@ function App() {
   const [eqHigh, setEqHigh] = useState(0);  // -12 to 12 dB
   const [eqBands, setEqBands] = useState(flatEqBands); // 10-band graphic EQ (-12..12 dB)
   const [compressorEnabled, setCompressorEnabled] = useState(false);
+  const [vocalLevelerEnabled, setVocalLevelerEnabled] = useState(false);
+  const [vocalLevelerTarget, setVocalLevelerTarget] = useState(-28.0);
+  const [vocalDeEsserAmount, setVocalDeEsserAmount] = useState(0);
+  const [vocalGateEnabled, setVocalGateEnabled] = useState(false);
   const [limiterEnabled, setLimiterEnabled] = useState(true);
-  const [normalizeEnabled, setNormalizeEnabled] = useState(true);
+  const [normalizeEnabled, setNormalizeEnabled] = useState(false);
   const [denoiseEnabled, setDenoiseEnabled] = useState(false);
   const [reverbEnabled, setReverbEnabled] = useState(false);
   const [delayEnabled, setDelayEnabled] = useState(false);
+  const [warmthEnabled, setWarmthEnabled] = useState(false);
+  const [widenerEnabled, setWidenerEnabled] = useState(false);
   const [masterVolume, setMasterVolume] = useState(0); // -60 to 12 dB
   const STEM_MAKEUP_DB = 6; // compensates quieter Demucs stems when Normalize ON
   const REVERB_WET = 0.22;
   const DELAY_WET = 0.16;
-  const MIC_ECHO_TIME = 0.22;
-  const MIC_ECHO_FEEDBACK = 0.28;
-  const MIC_ECHO_WET_MAX = 0.45;
   
   // Audio Trimming state
   const [trimEnabled, setTrimEnabled] = useState(false);
@@ -280,8 +552,14 @@ function App() {
   const [micReady, setMicReady] = useState(false);
   const [micError, setMicError] = useState('');
   const [micVolume, setMicVolume] = useState(0); // dB
+  const [micVoicePreset, setMicVoicePreset] = useState('off');
   const [micEchoEnabled, setMicEchoEnabled] = useState(false);
-  const [micEchoAmount, setMicEchoAmount] = useState(35); // 0–100% wet
+  const [micEchoAmount, setMicEchoAmount] = useState(35); // 0–100%
+  const [micReverbAmount, setMicReverbAmount] = useState(0); // 0–100%
+  const [micChorusAmount, setMicChorusAmount] = useState(0); // 0–100%
+  const [micPitch, setMicPitch] = useState(0); // semitones
+  const [micCrushAmount, setMicCrushAmount] = useState(0); // 0–100% robot
+  const [micFilterMode, setMicFilterMode] = useState('none'); // none | radio | robot
   const [isRecordingKaraoke, setIsRecordingKaraoke] = useState(false);
   const [recordedKaraokeUrl, setRecordedKaraokeUrl] = useState(null);
   const [recordedKaraokeName, setRecordedKaraokeName] = useState('');
@@ -289,6 +567,11 @@ function App() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   // Delay musik ke file rekaman agar sejajar dengan latency mic (ms)
   const [recordLatencyMs, setRecordLatencyMs] = useState(120);
+  // Pitch coach: bandingkan nada mic vs stem vokal
+  const [pitchCoachStatus, setPitchCoachStatus] = useState('idle'); // idle|quiet|ok|high|low
+  const [pitchCoachCents, setPitchCoachCents] = useState(0);
+  const [pitchCoachMicNote, setPitchCoachMicNote] = useState('--');
+  const [pitchCoachVocalNote, setPitchCoachVocalNote] = useState('--');
 
   const [savedProjects, setSavedProjects] = useState([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -333,6 +616,7 @@ function App() {
   const [yt2mp3JobId, setYt2mp3JobId] = useState(null);
   const [yt2mp3Error, setYt2mp3Error] = useState('');
   const [yt2mp3Title, setYt2mp3Title] = useState('');
+  const [yt2mp3MediaType, setYt2mp3MediaType] = useState('mp3'); // mp3 | mp4
 
   // MP3 folder playlist
   const [mp3Playlist, setMp3Playlist] = useState([]);
@@ -355,6 +639,9 @@ function App() {
   const [mp3Pitch, setMp3Pitch] = useState(0);
   const [mp3LyricsLoading, setMp3LyricsLoading] = useState(false);
   const [mp3LyricsStatus, setMp3LyricsStatus] = useState('');
+  const [mp3KaraokeExporting, setMp3KaraokeExporting] = useState(false);
+  const [mp3KaraokeSyncOpen, setMp3KaraokeSyncOpen] = useState(false);
+  const [mp3KaraokeBurnTrimMs, setMp3KaraokeBurnTrimMs] = useState(0);
   const [mp3SaveFeedback, setMp3SaveFeedback] = useState(null); // { type: 'loading'|'success'|'error', message }
   const [mp3SavingLyrics, setMp3SavingLyrics] = useState(false);
   const [mp3TrackLoading, setMp3TrackLoading] = useState(false);
@@ -367,8 +654,13 @@ function App() {
   const mp3FolderHandleRef = useRef(null);
   const mp3LoadedTrackRef = useRef(-1);
   const mp3RetriedLyricsRef = useRef(null);
-  const mp3EngineRef = useRef(null);
+  const mp3PitchPlayerRef = useRef(null);
+  const mp3BufferCacheRef = useRef(new Map()); // url -> AudioBuffer
+  const mp3PitchBusyRef = useRef(false);
+  const mp3PitchRef = useRef(0);
   const [mp3FolderWritable, setMp3FolderWritable] = useState(false);
+
+  useEffect(() => { mp3PitchRef.current = mp3Pitch; }, [mp3Pitch]);
 
   const getMp3TrackSync = useCallback((trackId) => (
     mp3LyricsSyncByTrack[trackId] || { offsetMs: 0, speedPct: 100 }
@@ -381,33 +673,109 @@ function App() {
     }));
   }, []);
 
-  const ensureMp3Engine = async () => {
-    if (mp3EngineRef.current) return mp3EngineRef.current;
-    if (!mp3AudioRef.current) return null;
-    try {
-      const toneStart = Tone.start();
-      const engine = createMp3AudioEngine(mp3AudioRef.current);
-      mp3EngineRef.current = engine;
-      await toneStart;
-      if (Tone.getContext().state !== 'running') {
-        await Tone.getContext().resume();
+  const stopMp3PitchPlayer = useCallback(() => {
+    const player = mp3PitchPlayerRef.current;
+    if (!player) return;
+    try { player.stop(); } catch { /* ignore */ }
+    try { player.dispose(); } catch { /* ignore */ }
+    mp3PitchPlayerRef.current = null;
+  }, []);
+
+  const syncMp3PitchPlayerToMedia = useCallback((shouldPlay) => {
+    const media = mp3AudioRef.current;
+    const player = mp3PitchPlayerRef.current;
+    if (!media || !player || !player.buffer?.loaded) return;
+    const dur = player.buffer.duration || 0;
+    const offset = Math.max(0, Math.min(media.currentTime || 0, Math.max(0, dur - 0.05)));
+    try { player.stop(); } catch { /* ignore */ }
+    if (shouldPlay) {
+      try {
+        player.start(Tone.now() + 0.02, offset);
+      } catch (e) {
+        console.warn('pitch player start failed', e);
       }
-      return engine;
-    } catch (e) {
-      mp3EngineRef.current = null;
-      console.error('MP3 audio engine init failed:', e);
-      return null;
     }
+  }, []);
+
+  const decodeMp3TrackBuffer = async (track) => {
+    const cached = mp3BufferCacheRef.current.get(track.url);
+    if (cached) return cached;
+    const res = await fetch(track.url);
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    const arr = await res.arrayBuffer();
+    const rawCtx = Tone.getContext().rawContext;
+    const buffer = await rawCtx.decodeAudioData(arr.slice(0));
+    // Batasi cache agar hemat memori
+    if (mp3BufferCacheRef.current.size >= 4) {
+      const oldest = mp3BufferCacheRef.current.keys().next().value;
+      mp3BufferCacheRef.current.delete(oldest);
+    }
+    mp3BufferCacheRef.current.set(track.url, buffer);
+    return buffer;
   };
 
-  const resumeMp3AfterEngineInit = async () => {
-    const audio = mp3AudioRef.current;
-    if (!audio || audio.paused) return;
-    try {
-      await audio.play();
-      setMp3IsPlaying(true);
-    } catch {
-      setMp3IsPlaying(false);
+  /** Pitch playlist via GrainPlayer.detune (seperti stem). Media di-mute; video tetap sync. */
+  const applyMp3PlaylistPitch = async (semitones, { announce = true, track: trackOverride = null } = {}) => {
+    const media = mp3AudioRef.current;
+    const track = trackOverride || (mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null);
+    if (!media || !track) throw new Error('no track');
+
+    await Tone.start();
+    if (Tone.getContext().state !== 'running') {
+      await Tone.getContext().resume();
+    }
+
+    const pitch = Number(semitones) || 0;
+
+    if (pitch === 0) {
+      stopMp3PitchPlayer();
+      media.muted = false;
+      try { media.playbackRate = 1; } catch { /* ignore */ }
+      if (announce) setMp3LyricsStatus('');
+      return;
+    }
+
+    if (announce) setMp3LyricsStatus('Menyiapkan tangga nada...');
+    const buffer = await decodeMp3TrackBuffer(track);
+    const wasPlaying = !media.paused;
+    const offset = Math.max(0, Math.min(media.currentTime || 0, Math.max(0, buffer.duration - 0.05)));
+
+    stopMp3PitchPlayer();
+
+    const player = new Tone.GrainPlayer({
+      url: buffer,
+      loop: false,
+      detune: pitch * 100,
+      grainSize: grainSizeForPitch(pitch),
+      overlap: GRAIN_OVERLAP,
+    }).toDestination();
+
+    if (!player.buffer.loaded) {
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 15000);
+        const done = () => { clearTimeout(t); resolve(); };
+        player.buffer.onload = done;
+        if (player.buffer.loaded) done();
+      });
+    }
+    if (!player.buffer.loaded) {
+      try { player.dispose(); } catch { /* ignore */ }
+      throw new Error('buffer not loaded');
+    }
+
+    mp3PitchPlayerRef.current = player;
+    media.muted = true;
+    try { media.playbackRate = 1; } catch { /* ignore */ }
+
+    if (wasPlaying) {
+      try { player.start(Tone.now() + 0.03, offset); } catch (e) { console.warn(e); }
+      try {
+        if (media.paused) await media.play();
+      } catch { /* ignore */ }
+    }
+
+    if (announce) {
+      setMp3LyricsStatus(`Tangga nada: ${pitch > 0 ? '+' : ''}${pitch} semitone`);
     }
   };
 
@@ -416,38 +784,44 @@ function App() {
       setMp3LyricsStatus('Putar lagu dulu sebelum mengubah tangga nada.');
       return;
     }
+    if (mp3PitchBusyRef.current) return;
     const prev = mp3Pitch;
     const next = Math.max(-12, Math.min(12, mp3Pitch + delta));
     if (next === prev) return;
 
+    mp3PitchBusyRef.current = true;
     setMp3Pitch(next);
-    setMp3LyricsStatus(next === 0 ? '' : `Tangga nada: ${next > 0 ? '+' : ''}${next} semitone`);
-
     try {
-      const engine = await ensureMp3Engine();
-      if (!engine) throw new Error('engine init failed');
-      engine.setPitch(next);
-      await resumeMp3AfterEngineInit();
+      const existing = mp3PitchPlayerRef.current;
+      if (existing && next !== 0 && existing.buffer?.loaded) {
+        existing.detune = next * 100;
+        existing.grainSize = grainSizeForPitch(next);
+        setMp3LyricsStatus(`Tangga nada: ${next > 0 ? '+' : ''}${next} semitone`);
+      } else {
+        await applyMp3PlaylistPitch(next);
+      }
     } catch (e) {
       console.error(e);
       setMp3Pitch(prev);
-      setMp3LyricsStatus('Gagal mengubah nada. Putar lagu lalu coba lagi.');
+      setMp3LyricsStatus('Gagal mengubah nada. Coba lagi saat lagu diputar.');
+      try { await applyMp3PlaylistPitch(prev, { announce: false }); } catch { /* ignore */ }
+    } finally {
+      mp3PitchBusyRef.current = false;
     }
   };
 
   const resetMp3Pitch = async () => {
+    if (mp3Pitch === 0 || mp3PitchBusyRef.current) return;
+    mp3PitchBusyRef.current = true;
     const prev = mp3Pitch;
-    if (prev === 0) return;
     setMp3Pitch(0);
-    setMp3LyricsStatus('');
     try {
-      if (mp3EngineRef.current) {
-        mp3EngineRef.current.setPitch(0);
-      }
-      await resumeMp3AfterEngineInit();
+      await applyMp3PlaylistPitch(0);
     } catch (e) {
       console.error(e);
       setMp3Pitch(prev);
+    } finally {
+      mp3PitchBusyRef.current = false;
     }
   };
 
@@ -487,15 +861,23 @@ function App() {
 
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
+  const preFxNodesRef = useRef({});
   const pannerNodesRef = useRef({});
   const masterEqRef = useRef(null);
   const masterEqBandsRef = useRef([]);
   const masterDenoiseHpRef = useRef(null);
   const masterDenoiseLpRef = useRef(null);
   const masterCompressorRef = useRef(null);
+  const vocalGateRef = useRef(null);
+  const vocalLevelerRef = useRef(null);
+  const vocalDeEsserRef = useRef(null);
   const masterPitchShiftRef = useRef(null);
   const masterDelayRef = useRef(null);
   const masterReverbRef = useRef(null);
+  const vocalReverbSendRef = useRef(null);
+  const vocalDelaySendRef = useRef(null);
+  const masterWarmthRef = useRef(null);
+  const masterWidenerRef = useRef(null);
   const masterMakeupRef = useRef(null);
   const masterLimiterRef = useRef(null);
   const masterOutRef = useRef(null);
@@ -504,6 +886,12 @@ function App() {
   const micRef = useRef(null);
   const micVolRef = useRef(null);
   const micEchoRef = useRef(null);
+  const micFxRef = useRef(null); // pitch, filters, crush, chorus, reverb
+  const micPitchAnalyserRef = useRef(null);
+  const vocalPitchAnalyserRef = useRef(null);
+  const pitchCoachRafRef = useRef(null);
+  const pitchCoachSmoothRef = useRef(0);
+  const pitchCoachActiveRef = useRef(false);
   const mediaRecorderRef = useRef(null);
   const recordChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
@@ -512,10 +900,13 @@ function App() {
   const originalAudioRef = useRef(null);
 
   const clearMp3Playlist = useCallback(() => {
+    stopMp3PitchPlayer();
+    mp3BufferCacheRef.current.clear();
     mp3PlaylistUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     mp3PlaylistUrlsRef.current = [];
     if (mp3AudioRef.current) {
       mp3AudioRef.current.pause();
+      mp3AudioRef.current.muted = false;
       mp3AudioRef.current.removeAttribute('src');
       mp3AudioRef.current.load();
     }
@@ -529,11 +920,12 @@ function App() {
     setMp3LyricsStatus('');
     setMp3SaveFeedback(null);
     setMp3SavingLyrics(false);
+    setMp3Pitch(0);
     mp3FolderHandleRef.current = null;
     setMp3FolderWritable(false);
     mp3LoadedTrackRef.current = -1;
     setMp3TrackLoading(false);
-  }, []);
+  }, [stopMp3PitchPlayer]);
 
   const applyLyricsToTrack = (index, data) => {
     const parsed = data.format === 'lrc' ? parseLrc(data.content) : null;
@@ -572,12 +964,33 @@ function App() {
     return fmt === 'plain' ? `${base}.txt` : `${base}.lrc`;
   };
 
-  const setMp3SaveFeedbackState = (type, message) => {
-    setMp3SaveFeedback({ type, message });
+  const setMp3SaveFeedbackState = (type, message, extra = {}) => {
+    setMp3SaveFeedback({ type, message, ...extra });
     if (type === 'loading') {
       setMp3SavingLyrics(true);
     } else {
       setMp3SavingLyrics(false);
+    }
+  };
+
+  const revealFileInExplorer = async (filePath) => {
+    if (!filePath) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/reveal-in-explorer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ path: filePath }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || 'Gagal membuka folder');
+      }
+    } catch (e) {
+      console.error(e);
+      setMp3SaveFeedbackState('error', e.message || 'Gagal membuka folder file');
     }
   };
 
@@ -673,18 +1086,113 @@ function App() {
     }
   };
 
+  const openKaraokeVideoSync = (index) => {
+    const track = mp3Playlist[index];
+    if (!track) return;
+    if (!isVideoFile(track.fileName || track.name)) {
+      setMp3SaveFeedbackState('error', 'Video karaoke hanya untuk file MP4/video.');
+      return;
+    }
+    if (track.lyrics?.type !== 'lrc' || !track.lyrics?.lines?.length) {
+      setMp3SaveFeedbackState('error', 'Butuh lirik ber-timestamp (.lrc) untuk membuat video karaoke.');
+      return;
+    }
+    setMp3KaraokeBurnTrimMs(0);
+    setMp3KaraokeSyncOpen(true);
+  };
+
+  const exportKaraokeVideo = async (index) => {
+    const track = mp3Playlist[index];
+    if (!track) return;
+
+    if (!isVideoFile(track.fileName || track.name)) {
+      setMp3SaveFeedbackState('error', 'Video karaoke hanya untuk file MP4/video.');
+      return;
+    }
+    if (track.lyrics?.type !== 'lrc' || !track.lyrics?.lines?.length) {
+      setMp3SaveFeedbackState('error', 'Butuh lirik ber-timestamp (.lrc) untuk membuat video karaoke.');
+      return;
+    }
+
+    // Selalu ambil sync terbaru dari panel + koreksi khusus burn-in
+    const sync = getMp3TrackSync(track.id);
+    const effectiveOffset = (sync.offsetMs || 0) - (track.lyrics.offset || 0) + (mp3KaraokeBurnTrimMs || 0);
+    // Speed ≠ 100% sering bikin lirik "ngacol" di video — pakai 100 kecuali user sengaja set
+    const speedPct = sync.speedPct || 100;
+    const cues = buildKaraokeVideoCues(track.lyrics.lines, effectiveOffset, speedPct);
+    if (!cues.length) {
+      setMp3SaveFeedbackState('error', 'Tidak ada baris lirik yang bisa di-bakar ke video.');
+      return;
+    }
+
+    setMp3KaraokeSyncOpen(false);
+    setMp3KaraokeExporting(true);
+    setMp3SaveFeedbackState('loading', 'Membuat video karaoke... (lalu pilih nama & folder)');
+
+    try {
+      const videoBlob = await fetch(track.url).then((r) => {
+        if (!r.ok) throw new Error('Gagal membaca file video');
+        return r.blob();
+      });
+
+      const form = new FormData();
+      form.append('video', videoBlob, track.fileName || `${track.name}.mp4`);
+      form.append('cues_json', JSON.stringify(cues));
+      // Pitch di video karaoke dimatikan — rubberband bisa bikin audio/lirik drift
+      form.append('pitch', '0');
+      form.append('display_name', track.name || 'karaoke');
+
+      const res = await fetch(`${API_BASE_URL}/playlist/karaoke-video`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (data.cancelled || data.status === 'cancelled') {
+        setMp3SaveFeedback(null);
+        setMp3SavingLyrics(false);
+        return;
+      }
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || data.detail || 'Gagal membuat video karaoke');
+      }
+
+      const outName = data.filename || `${track.name} karaoke.mp4`;
+      const warn = data.warning ? ` (${data.warning})` : '';
+      const revealPath = data.saved_path || '';
+      setMp3SaveFeedbackState(
+        'success',
+        `Video karaoke tersimpan: ${outName}${warn} — klik untuk buka folder & highlight file`,
+        { revealPath }
+      );
+
+      if (revealPath) {
+        void revealFileInExplorer(revealPath);
+      }
+    } catch (e) {
+      console.error(e);
+      setMp3SaveFeedbackState('error', e.message || 'Gagal membuat video karaoke');
+    } finally {
+      setMp3KaraokeExporting(false);
+    }
+  };
+
   const removeMp3Track = (index, e) => {
     e.stopPropagation();
     const track = mp3Playlist[index];
     if (!track) return;
 
+    mp3BufferCacheRef.current.delete(track.url);
     URL.revokeObjectURL(track.url);
     mp3PlaylistUrlsRef.current = mp3PlaylistUrlsRef.current.filter(u => u !== track.url);
 
     const nextPlaylist = mp3Playlist.filter((_, i) => i !== index);
     if (nextPlaylist.length === 0) {
+      stopMp3PitchPlayer();
       if (mp3AudioRef.current) {
         mp3AudioRef.current.pause();
+        mp3AudioRef.current.muted = false;
         mp3AudioRef.current.removeAttribute('src');
         mp3AudioRef.current.load();
       }
@@ -697,6 +1205,7 @@ function App() {
       setMp3LyricsStatus('');
       setMp3SaveFeedback(null);
       setMp3SavingLyrics(false);
+      setMp3Pitch(0);
       mp3LoadedTrackRef.current = -1;
       setMp3TrackLoading(false);
       return;
@@ -704,8 +1213,10 @@ function App() {
 
     let nextIndex = mp3CurrentIndex;
     if (index === mp3CurrentIndex) {
+      stopMp3PitchPlayer();
       if (mp3AudioRef.current) {
         mp3AudioRef.current.pause();
+        mp3AudioRef.current.muted = false;
         mp3AudioRef.current.removeAttribute('src');
         mp3AudioRef.current.load();
       }
@@ -854,10 +1365,14 @@ function App() {
       .filter(f => f.name.match(/\.(mp3|mp4|m4a|wav)$/i))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
+    stopMp3PitchPlayer();
+    mp3BufferCacheRef.current.clear();
+    setMp3Pitch(0);
     mp3PlaylistUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     mp3PlaylistUrlsRef.current = [];
     if (mp3AudioRef.current) {
       mp3AudioRef.current.pause();
+      mp3AudioRef.current.muted = false;
       mp3AudioRef.current.removeAttribute('src');
       mp3AudioRef.current.load();
     }
@@ -1006,7 +1521,7 @@ function App() {
   };
 
   useEffect(() => {
-    mp3ActiveLyricRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    mp3ActiveLyricRef.current?.scrollIntoView({ behavior: 'auto', block: 'center' });
   }, [mp3ActiveLyricIndex, mp3CurrentIndex]);
 
   useEffect(() => {
@@ -1035,14 +1550,35 @@ function App() {
       lines, time, offsetMs, speedPct
     );
     const prev = mp3LyricSyncRef.current;
-    if (prev.activeIndex !== activeIndex) {
-      mp3LyricSyncRef.current = { activeIndex, progress, activeWordIndex, wordProgress };
-      setMp3ActiveLyricIndex(activeIndex);
-      setMp3LyricProgress(progress);
-      setMp3LyricWordIndex(activeWordIndex);
+
+    // Hysteresis: jangan mundur 1 baris karena jitter waktu (kecuali seek jelas)
+    let stableIndex = activeIndex;
+    const lastT = mp3LyricSyncRef.current._lastTime;
+    const seekingBack = typeof lastT === 'number' && time < lastT - 0.35;
+    if (
+      !seekingBack
+      && prev.activeIndex >= 0
+      && activeIndex >= 0
+      && activeIndex === prev.activeIndex - 1
+    ) {
+      stableIndex = prev.activeIndex;
+    }
+    mp3LyricSyncRef.current._lastTime = time;
+
+    if (prev.activeIndex !== stableIndex) {
+      mp3LyricSyncRef.current = {
+        ...mp3LyricSyncRef.current,
+        activeIndex: stableIndex,
+        progress: stableIndex === activeIndex ? progress : prev.progress,
+        activeWordIndex: stableIndex === activeIndex ? activeWordIndex : -1,
+        wordProgress,
+      };
+      setMp3ActiveLyricIndex(stableIndex);
+      setMp3LyricProgress(stableIndex === activeIndex ? progress : 0);
+      setMp3LyricWordIndex(stableIndex === activeIndex ? activeWordIndex : -1);
     } else {
       let changed = false;
-      if (Math.abs(prev.progress - progress) >= 0.012) {
+      if (Math.abs(prev.progress - progress) >= 0.02) {
         changed = true;
         setMp3LyricProgress(progress);
       }
@@ -1051,7 +1587,13 @@ function App() {
         setMp3LyricWordIndex(activeWordIndex);
       }
       if (changed) {
-        mp3LyricSyncRef.current = { activeIndex, progress, activeWordIndex, wordProgress };
+        mp3LyricSyncRef.current = {
+          ...mp3LyricSyncRef.current,
+          activeIndex: stableIndex,
+          progress,
+          activeWordIndex,
+          wordProgress,
+        };
       }
     }
   }, []);
@@ -1064,12 +1606,14 @@ function App() {
     const t = mp3AudioRef.current?.currentTime ?? mp3CurrentTime;
     const sync = getMp3TrackSync(track.id);
     const speed = sync.speedPct / 100;
-    const newOffset = Math.round((line.time / speed - t) * 1000);
+    // Samakan dengan rumus preview: effective = slider - lyrics.offset
+    const effectiveMs = Math.round((line.time / speed - t) * 1000);
+    const storeMs = effectiveMs + (track.lyrics.offset || 0);
 
-    setMp3TrackSync(track.id, { offsetMs: newOffset });
+    setMp3TrackSync(track.id, { offsetMs: storeMs });
     mp3LyricsSyncMetaRef.current = {
       lines: track.lyrics.lines,
-      offsetMs: newOffset - (track.lyrics.offset || 0),
+      offsetMs: effectiveMs,
       speedPct: sync.speedPct,
     };
     syncMp3LyricsToTime(t);
@@ -1113,6 +1657,10 @@ function App() {
     const track = mp3Playlist[index];
     const audio = mp3AudioRef.current;
 
+    // Ganti lagu: hentikan GrainPlayer pitch, unmute media dulu
+    stopMp3PitchPlayer();
+    audio.muted = false;
+
     setMp3CurrentIndex(index);
     setMp3ActiveLyricIndex(-1);
     setMp3LyricProgress(0);
@@ -1123,17 +1671,21 @@ function App() {
     setMp3SavingLyrics(false);
     mp3RetriedLyricsRef.current = null;
 
-    const applyEngineState = () => {
-      const engine = mp3EngineRef.current;
-      if (!engine) return;
-      engine.setPitch(mp3Pitch);
+    const reapplyPitchIfNeeded = async () => {
+      const pitch = mp3PitchRef.current;
+      if (!pitch) return;
+      try {
+        await applyMp3PlaylistPitch(pitch, { announce: true, track });
+      } catch (e) {
+        console.warn('reapply pitch failed', e);
+      }
     };
 
     const onPlaySuccess = () => {
       setMp3IsPlaying(true);
       setMp3TrackLoading(false);
       scheduleLyricsFetch(index, audio.duration || 0);
-      applyEngineState();
+      void reapplyPitchIfNeeded();
     };
 
     const onPlayFail = (err) => {
@@ -1222,9 +1774,21 @@ function App() {
     }
     if (mp3IsPlaying) {
       mp3AudioRef.current.pause();
+      syncMp3PitchPlayerToMedia(false);
       setMp3IsPlaying(false);
     } else {
-      mp3AudioRef.current.play().then(() => setMp3IsPlaying(true)).catch(() => setMp3IsPlaying(false));
+      mp3AudioRef.current.play()
+        .then(() => {
+          setMp3IsPlaying(true);
+          if (mp3PitchPlayerRef.current) {
+            syncMp3PitchPlayerToMedia(true);
+          } else if (mp3PitchRef.current) {
+            void applyMp3PlaylistPitch(mp3PitchRef.current, {
+              track: mp3Playlist[mp3CurrentIndex],
+            });
+          }
+        })
+        .catch(() => setMp3IsPlaying(false));
     }
   };
 
@@ -1238,13 +1802,118 @@ function App() {
     if (mp3Playlist.length === 0) return;
     if (mp3AudioRef.current && mp3AudioRef.current.currentTime > 3) {
       mp3AudioRef.current.currentTime = 0;
+      if (mp3PitchPlayerRef.current) {
+        syncMp3PitchPlayerToMedia(!mp3AudioRef.current.paused);
+      }
       return;
     }
     const prev = mp3CurrentIndex > 0 ? mp3CurrentIndex - 1 : mp3Playlist.length - 1;
     playMp3Track(prev);
   };
 
+  const disposeMicFxNodes = () => {
+    const fx = micFxRef.current;
+    if (fx) {
+      Object.values(fx).forEach((node) => {
+        try { node?.dispose?.(); } catch { /* ignore */ }
+      });
+    }
+    micFxRef.current = null;
+    micEchoRef.current = null;
+  };
+
+  const stopPitchCoachLoop = () => {
+    pitchCoachActiveRef.current = false;
+    if (pitchCoachRafRef.current) {
+      cancelAnimationFrame(pitchCoachRafRef.current);
+      pitchCoachRafRef.current = null;
+    }
+  };
+
+  const resetPitchCoachUi = () => {
+    setPitchCoachStatus('idle');
+    setPitchCoachCents(0);
+    setPitchCoachMicNote('--');
+    setPitchCoachVocalNote('--');
+    pitchCoachSmoothRef.current = 0;
+  };
+
+  const disposeVocalPitchAnalyser = () => {
+    try { vocalPitchAnalyserRef.current?.dispose?.(); } catch { /* ignore */ }
+    vocalPitchAnalyserRef.current = null;
+  };
+
+  const disposeMicPitchAnalyser = () => {
+    try { micPitchAnalyserRef.current?.dispose?.(); } catch { /* ignore */ }
+    micPitchAnalyserRef.current = null;
+  };
+
+  const ensureVocalPitchAnalyser = () => {
+    if (vocalPitchAnalyserRef.current) return vocalPitchAnalyserRef.current;
+    const pre = preFxNodesRef.current?.vocals;
+    if (!pre) return null;
+    const analyser = new Tone.Analyser('waveform', 2048);
+    pre.connect(analyser);
+    vocalPitchAnalyserRef.current = analyser;
+    return analyser;
+  };
+
+  const runPitchCoachFrame = () => {
+    pitchCoachRafRef.current = null;
+    if (!pitchCoachActiveRef.current) return;
+
+    const micAn = micPitchAnalyserRef.current;
+    const vocalAn = ensureVocalPitchAnalyser();
+    if (!micAn || !vocalAn) {
+      setPitchCoachStatus('idle');
+      pitchCoachRafRef.current = requestAnimationFrame(runPitchCoachFrame);
+      return;
+    }
+
+    const sr = Tone.getContext().sampleRate || 44100;
+    const micHz = detectPitchHz(micAn.getValue(), sr);
+    const vocalHz = detectPitchHz(vocalAn.getValue(), sr);
+
+    if (!micHz && !vocalHz) {
+      setPitchCoachStatus('quiet');
+      setPitchCoachMicNote('--');
+      setPitchCoachVocalNote('--');
+    } else if (!micHz) {
+      setPitchCoachStatus('quiet');
+      setPitchCoachMicNote('--');
+      setPitchCoachVocalNote(vocalHz ? midiToNoteName(hzToMidi(vocalHz)) : '--');
+    } else if (!vocalHz) {
+      setPitchCoachStatus('quiet');
+      setPitchCoachMicNote(midiToNoteName(hzToMidi(micHz)));
+      setPitchCoachVocalNote('--');
+    } else {
+      const cents = pitchDiffCents(micHz, vocalHz);
+      const smooth = pitchCoachSmoothRef.current * 0.72 + cents * 0.28;
+      pitchCoachSmoothRef.current = smooth;
+      setPitchCoachCents(smooth);
+      setPitchCoachMicNote(midiToNoteName(hzToMidi(micHz)));
+      setPitchCoachVocalNote(midiToNoteName(hzToMidi(vocalHz)));
+      if (Math.abs(smooth) <= 35) setPitchCoachStatus('ok');
+      else if (smooth > 35) setPitchCoachStatus('high');
+      else setPitchCoachStatus('low');
+    }
+
+    if (pitchCoachActiveRef.current) {
+      pitchCoachRafRef.current = requestAnimationFrame(runPitchCoachFrame);
+    }
+  };
+
+  const startPitchCoachLoop = () => {
+    if (!micPitchAnalyserRef.current) return;
+    stopPitchCoachLoop();
+    pitchCoachActiveRef.current = true;
+    ensureVocalPitchAnalyser();
+    pitchCoachRafRef.current = requestAnimationFrame(runPitchCoachFrame);
+  };
+
   const disposeMic = () => {
+    stopPitchCoachLoop();
+    resetPitchCoachUi();
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
@@ -1258,10 +1927,10 @@ function App() {
     try { micRef.current?.close(); } catch { /* ignore */ }
     try { micRef.current?.disconnect(); } catch { /* ignore */ }
     try { micRef.current?.dispose(); } catch { /* ignore */ }
-    try { micEchoRef.current?.dispose(); } catch { /* ignore */ }
+    disposeMicFxNodes();
+    disposeMicPitchAnalyser();
     try { micVolRef.current?.dispose(); } catch { /* ignore */ }
     micRef.current = null;
-    micEchoRef.current = null;
     micVolRef.current = null;
     setMicReady(false);
     setIsRecordingKaraoke(false);
@@ -1278,6 +1947,13 @@ function App() {
     masterPitchShiftRef.current = null; // pitch now via GrainPlayer.detune (no master PitchShift)
     if (masterDelayRef.current) { masterDelayRef.current.dispose(); masterDelayRef.current = null; }
     if (masterReverbRef.current) { masterReverbRef.current.dispose(); masterReverbRef.current = null; }
+    if (vocalReverbSendRef.current) { vocalReverbSendRef.current.dispose(); vocalReverbSendRef.current = null; }
+    if (vocalDelaySendRef.current) { vocalDelaySendRef.current.dispose(); vocalDelaySendRef.current = null; }
+    if (vocalGateRef.current) { vocalGateRef.current.dispose(); vocalGateRef.current = null; }
+    if (vocalLevelerRef.current) { vocalLevelerRef.current.dispose(); vocalLevelerRef.current = null; }
+    if (vocalDeEsserRef.current) { vocalDeEsserRef.current.dispose(); vocalDeEsserRef.current = null; }
+    if (masterWarmthRef.current) { masterWarmthRef.current.dispose(); masterWarmthRef.current = null; }
+    if (masterWidenerRef.current) { masterWidenerRef.current.dispose(); masterWidenerRef.current = null; }
     if (masterMakeupRef.current) { masterMakeupRef.current.dispose(); masterMakeupRef.current = null; }
     if (masterLimiterRef.current) { masterLimiterRef.current.dispose(); masterLimiterRef.current = null; }
     if (recordCompDelayRef.current) { recordCompDelayRef.current.dispose(); recordCompDelayRef.current = null; }
@@ -1288,7 +1964,9 @@ function App() {
   useEffect(() => {
     return () => {
       Object.values(playersRef.current).forEach(p => p.dispose());
-      Object.values(volumeNodesRef.current).forEach(v => v.dispose());
+      Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
+      disposeVocalPitchAnalyser();
+      Object.values(preFxNodesRef.current).forEach(g => g.dispose());
       disposeMasterChain();
     };
   }, []);
@@ -1589,7 +2267,8 @@ function App() {
     if (!line) return;
     const effectiveTime = stemCurrentTime * tempo;
     const speed = stemLyricsSpeedPct / 100;
-    setStemLyricsOffsetMs(Math.round((line.time / speed - effectiveTime) * 1000));
+    const effectiveMs = Math.round((line.time / speed - effectiveTime) * 1000);
+    setStemLyricsOffsetMs(effectiveMs + (stemLyrics.offset || 0));
     syncStemLyricsToTime(stemCurrentTime);
   };
 
@@ -1598,7 +2277,7 @@ function App() {
   }, [stemCurrentTime, tempo, stemLyrics, stemLyricsOffsetMs, stemLyricsSpeedPct]);
 
   useEffect(() => {
-    stemActiveLyricRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    stemActiveLyricRef.current?.scrollIntoView({ behavior: 'auto', block: 'center' });
   }, [stemActiveLyricIndex]);
 
   useEffect(() => {
@@ -1643,6 +2322,9 @@ function App() {
           const data = await res.json();
           if (data.progress !== undefined) setYt2mp3Progress(data.progress);
           if (data.title) setYt2mp3Title(data.title);
+          if (data.media_type === 'mp4' || data.media_type === 'mp3') {
+            setYt2mp3MediaType(data.media_type);
+          }
           
           if (data.status === 'done') {
             setYt2mp3Status('done');
@@ -2017,7 +2699,14 @@ function App() {
     Object.values(playersRef.current).forEach((p) => {
       if (p?.playbackRate !== undefined) p.playbackRate = nextTempo;
     });
-    rebuildStemPlayersForPitch(nextPitch);
+    // Update pitch secara real-time (GrainPlayer selalu digunakan)
+    const cents = nextPitch * 100;
+    const gs = grainSizeForPitch(nextPitch);
+    Object.values(playersRef.current).forEach((p) => {
+      if (!p) return;
+      if (p.detune !== undefined) p.detune = cents;
+      if ('grainSize' in p) p.grainSize = gs;
+    });
 
     const low = settings.eq_low ?? 0;
     const mid = settings.eq_mid ?? 0;
@@ -2037,15 +2726,33 @@ function App() {
       return Number.isFinite(v) ? Math.max(-12, Math.min(12, v)) : 0;
     });
     setEqBands(bands);
-    masterEqBandsRef.current.forEach((f, i) => {
-      if (f?.gain) f.gain.value = bands[i] ?? 0;
-    });
-
+    if (masterEqBandsRef.current) {
+      masterEqBandsRef.current.forEach((f, i) => {
+        if (f?.gain) f.gain.value = bands[i] ?? 0;
+      });
+    }
+    
     const comp = !!settings.compressor_enabled;
     setCompressorEnabled(comp);
+    
+    const vLev = !!settings.vocal_leveler_enabled;
+    setVocalLevelerEnabled(vLev);
+    const vLevTgt = settings.vocal_leveler_target ?? -28.0;
+    setVocalLevelerTarget(vLevTgt);
+    const vDeEss = settings.vocal_deesser_amount ?? 0;
+    setVocalDeEsserAmount(vDeEss);
+
     if (masterCompressorRef.current) {
       masterCompressorRef.current.threshold.value = comp ? -15 : 0;
       masterCompressorRef.current.ratio.value = comp ? 2.5 : 1;
+    }
+    
+    if (vocalLevelerRef.current) {
+      vocalLevelerRef.current.threshold.value = vLev ? vLevTgt : 0;
+      vocalLevelerRef.current.ratio.value = vLev ? 4 : 1;
+    }
+    if (vocalDeEsserRef.current) {
+      vocalDeEsserRef.current.gain.value = vDeEss > 0 ? -vDeEss : 0;
     }
 
     const lim = settings.limiter_enabled !== false;
@@ -2069,14 +2776,14 @@ function App() {
 
     const reverbOn = !!settings.reverb_enabled;
     setReverbEnabled(reverbOn);
-    if (masterReverbRef.current) {
-      masterReverbRef.current.wet.value = reverbOn ? REVERB_WET : 0;
+    if (vocalReverbSendRef.current) {
+      vocalReverbSendRef.current.gain.value = reverbOn ? REVERB_WET : 0;
     }
 
     const delayOn = !!settings.delay_enabled;
     setDelayEnabled(delayOn);
-    if (masterDelayRef.current) {
-      masterDelayRef.current.wet.value = delayOn ? DELAY_WET : 0;
+    if (vocalDelaySendRef.current) {
+      vocalDelaySendRef.current.gain.value = delayOn ? DELAY_WET : 0;
     }
 
     const mVol = settings.master_volume ?? 0;
@@ -2132,6 +2839,9 @@ function App() {
           eq_high: eqHigh,
           eq_bands: eqBands,
           compressor_enabled: compressorEnabled,
+          vocal_leveler_enabled: vocalLevelerEnabled,
+          vocal_leveler_target: vocalLevelerTarget,
+          vocal_deesser_amount: vocalDeEsserAmount,
           master_volume: masterVolume,
           limiter_enabled: limiterEnabled,
           normalize_enabled: normalizeEnabled,
@@ -2147,7 +2857,9 @@ function App() {
     }
   }, [
     fileId, token, status, volumes, mutes, pans, pitch, tempo,
-    eqLow, eqMid, eqHigh, eqBands, compressorEnabled, masterVolume, limiterEnabled, normalizeEnabled,
+    eqLow, eqMid, eqHigh, eqBands, compressorEnabled,
+    vocalLevelerEnabled, vocalLevelerTarget, vocalDeEsserAmount,
+    masterVolume, limiterEnabled, normalizeEnabled,
     denoiseEnabled, reverbEnabled, delayEnabled,
     stemLyricsOffsetMs, stemLyricsSpeedPct,
   ]);
@@ -2159,6 +2871,7 @@ function App() {
     Object.values(playersRef.current).forEach((p) => p.dispose());
     Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
     Object.values(pannerNodesRef.current).forEach((p) => { try { p.dispose(); } catch {} });
+    disposeVocalPitchAnalyser();
     disposeMasterChain();
     playersRef.current = {};
     volumeNodesRef.current = {};
@@ -2210,6 +2923,7 @@ function App() {
       Object.values(playersRef.current).forEach(p => p.dispose());
       Object.values(volumeNodesRef.current).forEach(v => v.dispose());
       Object.values(pannerNodesRef.current).forEach(p => { try { p.dispose(); } catch {} });
+      disposeVocalPitchAnalyser();
       disposeMasterChain();
 
       const masterEq = new Tone.EQ3(0, 0, 0);
@@ -2223,16 +2937,59 @@ function App() {
       const denoiseHp = new Tone.Filter({ type: 'highpass', frequency: denoiseEnabled ? 90 : 20, Q: 0.7 });
       const denoiseLp = new Tone.Filter({ type: 'lowpass', frequency: denoiseEnabled ? 12000 : 20000, Q: 0.7 });
       const masterCompressor = new Tone.Compressor({ threshold: 0, ratio: 1, attack: 0.01, release: 0.1 });
+      
+      const vLevTgt = settings?.vocal_leveler_target ?? -28.0;
+      const vLevEnabled = settings?.vocal_leveler_enabled ?? false;
+      const vDeEssAmt = settings?.vocal_deesser_amount ?? 0;
+      
+      const vocalGate = new Tone.Gate({
+        threshold: vocalGateEnabled ? -35 : -100,
+        attack: 0.1,
+        release: 0.3
+      });
+      const vocalLeveler = new Tone.Compressor({ 
+        threshold: vLevEnabled ? vLevTgt : 0, 
+        ratio: vLevEnabled ? 4 : 1, 
+        attack: 0.1, 
+        release: 0.5 
+      });
+      const vocalDeEsser = new Tone.BiquadFilter({ 
+        type: 'peaking', 
+        frequency: 7000, 
+        Q: 2, 
+        gain: vDeEssAmt > 0 ? -vDeEssAmt : 0 
+      });
+
       const masterDelay = new Tone.FeedbackDelay({
         delayTime: 0.2,
         feedback: 0.22,
-        wet: delayEnabled ? DELAY_WET : 0,
+        wet: 1, // selalu 100% wet, kontrol on/off via send gain
       });
-      const masterReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: reverbEnabled ? REVERB_WET : 0 });
+      const masterReverb = new Tone.Reverb({ decay: 2.4, preDelay: 0.02, wet: 1 });
       await masterReverb.generate();
+      
+      // Send gains: mengontrol seberapa banyak sinyal vokal dikirim ke efek
+      const vocalReverbSend = new Tone.Gain(reverbEnabled ? REVERB_WET : 0);
+      const vocalDelaySend = new Tone.Gain(delayEnabled ? DELAY_WET : 0);
+      vocalReverbSend.connect(masterReverb);
+      vocalDelaySend.connect(masterDelay);
+      
+      const masterWarmth = new Tone.Distortion({
+        distortion: 0.1,
+        oversample: '2x',
+        wet: warmthEnabled ? 0.15 : 0
+      });
+      const masterWidener = new Tone.StereoWidener({
+        width: widenerEnabled ? 0.6 : 0
+      });
+
       const masterMakeup = new Tone.Volume(normalizeEnabled ? STEM_MAKEUP_DB : 0);
       const masterLimiter = new Tone.Limiter(limiterEnabled ? -1 : 0);
       const masterOut = new Tone.Gain(1);
+
+      // Routing Aux Return → Master
+      masterDelay.connect(masterMakeup);
+      masterReverb.connect(masterMakeup);
       // Speakers: undelayed. Recorder: music delayed to match mic input latency.
       const recordCompDelay = new Tone.Delay({ delayTime: 0, maxDelay: 0.5 });
       const recordDest = Tone.getContext().createMediaStreamDestination();
@@ -2242,8 +2999,8 @@ function App() {
         denoiseHp,
         denoiseLp,
         masterCompressor,
-        masterDelay,
-        masterReverb,
+        masterWarmth,
+        masterWidener,
         masterMakeup,
         masterLimiter,
         masterOut
@@ -2256,9 +3013,15 @@ function App() {
       masterDenoiseHpRef.current = denoiseHp;
       masterDenoiseLpRef.current = denoiseLp;
       masterCompressorRef.current = masterCompressor;
-      masterPitchShiftRef.current = null;
+      vocalGateRef.current = vocalGate;
+      vocalLevelerRef.current = vocalLeveler;
+      vocalDeEsserRef.current = vocalDeEsser;
       masterDelayRef.current = masterDelay;
       masterReverbRef.current = masterReverb;
+      vocalReverbSendRef.current = vocalReverbSend;
+      vocalDelaySendRef.current = vocalDelaySend;
+      masterWarmthRef.current = masterWarmth;
+      masterWidenerRef.current = masterWidener;
       masterMakeupRef.current = masterMakeup;
       masterLimiterRef.current = masterLimiter;
       masterOutRef.current = masterOut;
@@ -2267,47 +3030,60 @@ function App() {
 
       const newPlayers = {};
       const newVolumes = {};
+      const newPreFxs = {};
       const newPanners = {};
       const initVols = {};
       const initMutes = {};
       const initPans = {};
       let loadedCount = 0;
 
-      // Pitch 0 → Tone.Player (stable level). Pitch ≠ 0 → GrainPlayer (independent pitch).
+      // Selalu gunakan GrainPlayer agar pitch bisa diubah real-time tanpa rebuild.
       const loadPitch = settings?.pitch ?? pitch;
       const loadTempo = settings?.tempo ?? tempo;
-      const useGrain = needsGrainPitch(loadPitch);
 
       const loadPromises = INSTRUMENTS.map((inst) => {
         const url = `${API_BASE_URL}/audio/${id}/${inst.id}.mp3`;
         const panNode = new Tone.Panner(0).connect(masterEq);
         const volNode = new Tone.Volume(0).connect(panNode);
+        
+        // Aux Sends khusus Vokal (hanya sinyal basah/gema)
+        if (inst.id === 'vocals') {
+          volNode.connect(vocalReverbSend);
+          volNode.connect(vocalDelaySend);
+        }
+
+        const preFxNode = new Tone.Gain(1);
+        
+        if (inst.id === 'vocals') {
+          preFxNode.connect(vocalGate);
+          vocalGate.connect(vocalLeveler);
+          vocalLeveler.connect(vocalDeEsser);
+          vocalDeEsser.connect(volNode);
+        } else {
+          preFxNode.connect(volNode);
+        }
 
         return new Promise((resolve, reject) => {
-          const common = {
+          const chainSource = new Tone.GrainPlayer({
             url,
             playbackRate: loadTempo,
+            detune: loadPitch * 100,
+            grainSize: grainSizeForPitch(loadPitch),
+            overlap: GRAIN_OVERLAP,
             onload: () => {
               loadedCount += 1;
               setProgressText(`Memuat ${inst.label}... (${loadedCount}/${INSTRUMENTS.length})`);
               resolve();
             },
             onerror: (err) => reject(new Error(`Gagal memuat ${inst.label}: ${err?.message || 'file tidak ditemukan'}`)),
-          };
-          const player = useGrain
-            ? new Tone.GrainPlayer({
-                ...common,
-                grainSize: grainSizeForPitch(loadPitch),
-                overlap: GRAIN_OVERLAP,
-                detune: loadPitch * 100,
-              })
-            : new Tone.Player(common);
-
-          player.connect(volNode);
-          player.sync().start(0);
-
-          newPlayers[inst.id] = player;
+          });
+          
+          chainSource.connect(preFxNode);
+          chainSource.sync().start(0);
+          
+          newPlayers[inst.id] = chainSource;
           newVolumes[inst.id] = volNode;
+          newPreFxs[inst.id] = preFxNode;
           newPanners[inst.id] = panNode;
           initVols[inst.id] = 0;
           initMutes[inst.id] = false;
@@ -2319,6 +3095,7 @@ function App() {
 
       playersRef.current = newPlayers;
       volumeNodesRef.current = newVolumes;
+      preFxNodesRef.current = newPreFxs;
       pannerNodesRef.current = newPanners;
 
       setPlayers(newPlayers);
@@ -2335,8 +3112,11 @@ function App() {
         setEqBands(flatEqBands());
         masterEqBandsRef.current.forEach((f) => { if (f?.gain) f.gain.value = 0; });
         setCompressorEnabled(false);
+        setVocalLevelerEnabled(false);
+        setVocalLevelerTarget(-28.0);
+        setVocalDeEsserAmount(0);
         setLimiterEnabled(true);
-        setNormalizeEnabled(true);
+        setNormalizeEnabled(false);
         setDenoiseEnabled(false);
         setReverbEnabled(false);
         setDelayEnabled(false);
@@ -2453,7 +3233,9 @@ function App() {
     return () => clearTimeout(saveSettingsTimeoutRef.current);
   }, [
     status, fileId, volumes, mutes, pans, pitch, tempo,
-    eqLow, eqMid, eqHigh, eqBands, compressorEnabled, masterVolume, limiterEnabled, normalizeEnabled,
+    eqLow, eqMid, eqHigh, eqBands, compressorEnabled,
+    vocalLevelerEnabled, vocalLevelerTarget, vocalDeEsserAmount,
+    masterVolume, limiterEnabled, normalizeEnabled,
     denoiseEnabled, reverbEnabled, delayEnabled,
     stemLyricsOffsetMs, stemLyricsSpeedPct,
     saveProjectSettings,
@@ -2475,10 +3257,15 @@ function App() {
       Tone.Transport.start();
       setIsPlaying(true);
       if (stemVideoRef.current) stemVideoRef.current.play().catch(e => console.error("Video play error:", e));
+      if (micReady) startPitchCoachLoop();
     } else {
       Tone.Transport.pause();
       setIsPlaying(false);
       if (stemVideoRef.current) stemVideoRef.current.pause();
+      if (!isRecordingKaraoke) {
+        stopPitchCoachLoop();
+        resetPitchCoachUi();
+      }
     }
   };
 
@@ -2487,6 +3274,29 @@ function App() {
     if (!mutes[instId] && volumeNodesRef.current[instId]) {
       volumeNodesRef.current[instId].volume.value = value;
     }
+  };
+
+  const formatVolumeDb = (db) => {
+    const v = Number.isFinite(db) ? db : 0;
+    if (v <= -60) return '-∞';
+    return `${v > 0 ? '+' : ''}${Math.round(v)}`;
+  };
+
+  const commitVolumeDb = (instId, text) => {
+    const raw = String(text ?? '').trim().replace(/\s*dB\s*$/i, '').replace(',', '.');
+    let next;
+    if (/^-?(∞|inf|infinity)$/i.test(raw) || raw === '-') {
+      next = -60;
+    } else {
+      const parsed = parseFloat(raw.replace(/^\+/, ''));
+      if (Number.isNaN(parsed)) {
+        setVolumeDbEdit({ id: null, text: '' });
+        return;
+      }
+      next = Math.max(-60, Math.min(12, Math.round(parsed)));
+    }
+    handleVolumeChange(instId, next);
+    setVolumeDbEdit({ id: null, text: '' });
   };
 
   const handlePanChange = (instId, value) => {
@@ -2506,66 +3316,17 @@ function App() {
     });
   };
 
-  const rebuildStemPlayersForPitch = (nextPitch) => {
-    const wantGrain = needsGrainPitch(nextPitch);
-    const sample = Object.values(playersRef.current)[0];
-    if (!sample) return;
-    const currentlyGrain = 'grainSize' in sample;
-    if (wantGrain === currentlyGrain) {
-      // Same engine — just update grain params / skip Player detune (Player.detune changes speed)
-      if (wantGrain) {
-        const cents = nextPitch * 100;
-        const grainSize = grainSizeForPitch(nextPitch);
-        Object.values(playersRef.current).forEach((p) => {
-          if (!p) return;
-          if (p.detune !== undefined) p.detune = cents;
-          if ('grainSize' in p) p.grainSize = grainSize;
-        });
-      }
-      return;
-    }
-
-    const wasPlaying = Tone.Transport.state === 'started';
-    const t = Tone.Transport.seconds;
-    if (wasPlaying) Tone.Transport.pause();
-
-    const nextPlayers = {};
-    INSTRUMENTS.forEach((inst) => {
-      const old = playersRef.current[inst.id];
-      const volNode = volumeNodesRef.current[inst.id];
-      if (!old?.buffer || !volNode) return;
-      const buffer = old.buffer;
-      try { old.unsync(); } catch { /* ignore */ }
-      try { old.disconnect(); } catch { /* ignore */ }
-      try { old.dispose(); } catch { /* ignore */ }
-
-      const player = wantGrain
-        ? new Tone.GrainPlayer({
-            url: buffer,
-            grainSize: grainSizeForPitch(nextPitch),
-            overlap: GRAIN_OVERLAP,
-            detune: nextPitch * 100,
-            playbackRate: tempo,
-          })
-        : new Tone.Player({
-            url: buffer,
-            playbackRate: tempo,
-          });
-      player.connect(volNode);
-      player.sync().start(0);
-      nextPlayers[inst.id] = player;
-    });
-
-    playersRef.current = nextPlayers;
-    setPlayers(nextPlayers);
-    Tone.Transport.seconds = t;
-    if (wasPlaying) Tone.Transport.start();
-  };
-
+  // Pitch sekarang real-time: cukup ubah properti detune & grainSize tanpa rebuild.
   const handlePitchChange = (e) => {
     const val = parseFloat(e.target.value);
     setPitch(val);
-    rebuildStemPlayersForPitch(val);
+    const cents = val * 100;
+    const gs = grainSizeForPitch(val);
+    Object.values(playersRef.current).forEach((p) => {
+      if (!p) return;
+      if (p.detune !== undefined) p.detune = cents;
+      if ('grainSize' in p) p.grainSize = gs;
+    });
   };
 
   const handleTempoChange = (e) => {
@@ -2614,6 +3375,16 @@ function App() {
     setEqBands(flat);
     masterEqBandsRef.current.forEach((f) => { if (f?.gain) f.gain.value = 0; });
   };
+  
+  const handleAutoEq = () => {
+    // Kurva "Hi-Fi / Clarity" standar mastering (Smile Curve)
+    const magicCurve = [2, 3, 1, -1, -2, 0, 1, 2, 3, 2];
+    setEqBands(magicCurve);
+    magicCurve.forEach((val, i) => {
+      const node = masterEqBandsRef.current[i];
+      if (node?.gain) node.gain.value = val;
+    });
+  };
   const handleMasterVolumeChange = (val) => {
     setMasterVolume(val);
     Tone.Destination.volume.value = val;
@@ -2628,6 +3399,67 @@ function App() {
       return next;
     });
   };
+
+  const toggleVocalLeveler = () => {
+    setVocalLevelerEnabled(prev => {
+      const next = !prev;
+      if (vocalLevelerRef.current) {
+        vocalLevelerRef.current.threshold.value = next ? vocalLevelerTarget : 0;
+        vocalLevelerRef.current.ratio.value = next ? 4 : 1;
+      }
+      return next;
+    });
+  };
+
+  const handleVocalLevelerTargetChange = (e) => {
+    const val = parseFloat(e.target.value);
+    setVocalLevelerTarget(val);
+    if (vocalLevelerRef.current && vocalLevelerEnabled) {
+      vocalLevelerRef.current.threshold.value = val;
+    }
+  };
+
+  const handleVocalDeEsserChange = (e) => {
+    const val = parseFloat(e.target.value);
+    setVocalDeEsserAmount(val);
+    if (vocalDeEsserRef.current) {
+      vocalDeEsserRef.current.gain.value = val > 0 ? -val : 0;
+    }
+  };
+
+  const handleAutoVocalProcessing = () => {
+    setVocalLevelerEnabled(true);
+    setVocalGateEnabled(true);
+    setVocalLevelerTarget(-20.0);
+    setVocalDeEsserAmount(5);
+    
+    if (vocalGateRef.current) {
+      vocalGateRef.current.threshold = -35;
+    }
+    if (vocalLevelerRef.current) {
+      vocalLevelerRef.current.threshold.value = -20;
+      vocalLevelerRef.current.ratio.value = 4;
+    }
+    if (vocalDeEsserRef.current) {
+      vocalDeEsserRef.current.gain.value = -5;
+    }
+  };
+
+  const handleAutoBalance = () => {
+    // Vokal tetap 0 dB (volume asli), instrumen pengiring diturunkan
+    // agar vokal menonjol dengan jelas di atas musik.
+    const targetVolumes = { vocals: 0, drums: -2, bass: -3, guitar: -4, piano: -4, other: -5 };
+    const targetPans = { vocals: 0, drums: 0, bass: 0, guitar: -15, piano: 15, other: 25 };
+
+    INSTRUMENTS.forEach(inst => {
+      const vol = targetVolumes[inst.id] ?? -3;
+      handleVolumeChange(inst.id, vol);
+      
+      const pan = targetPans[inst.id] ?? 0;
+      handlePanChange(inst.id, pan);
+    });
+  };
+
   const handleLimiterToggle = () => {
     setLimiterEnabled(prev => {
       const next = !prev;
@@ -2659,8 +3491,8 @@ function App() {
   const handleReverbToggle = () => {
     setReverbEnabled(prev => {
       const next = !prev;
-      if (masterReverbRef.current) {
-        masterReverbRef.current.wet.value = next ? REVERB_WET : 0;
+      if (vocalReverbSendRef.current) {
+        vocalReverbSendRef.current.gain.value = next ? REVERB_WET : 0;
       }
       return next;
     });
@@ -2668,8 +3500,35 @@ function App() {
   const handleDelayToggle = () => {
     setDelayEnabled(prev => {
       const next = !prev;
-      if (masterDelayRef.current) {
-        masterDelayRef.current.wet.value = next ? DELAY_WET : 0;
+      if (vocalDelaySendRef.current) {
+        vocalDelaySendRef.current.gain.value = next ? DELAY_WET : 0;
+      }
+      return next;
+    });
+  };
+  const handleVocalGateToggle = () => {
+    setVocalGateEnabled(prev => {
+      const next = !prev;
+      if (vocalGateRef.current) {
+        vocalGateRef.current.threshold = next ? -35 : -100;
+      }
+      return next;
+    });
+  };
+  const handleWarmthToggle = () => {
+    setWarmthEnabled(prev => {
+      const next = !prev;
+      if (masterWarmthRef.current) {
+        masterWarmthRef.current.wet.value = next ? 0.15 : 0;
+      }
+      return next;
+    });
+  };
+  const handleWidenerToggle = () => {
+    setWidenerEnabled(prev => {
+      const next = !prev;
+      if (masterWidenerRef.current) {
+        masterWidenerRef.current.width.value = next ? 0.6 : 0;
       }
       return next;
     });
@@ -2694,6 +3553,8 @@ function App() {
       if (stemVideoRef.current) stemVideoRef.current.pause();
       setIsPlaying(false);
     }
+    stopPitchCoachLoop();
+    resetPitchCoachUi();
   };
 
   const estimateMicLatencyMs = () => {
@@ -2725,6 +3586,7 @@ function App() {
       }
       if (micRef.current) {
         setMicReady(true);
+        if (Tone.Transport.state === 'started') startPitchCoachLoop();
         return;
       }
       const mic = new Tone.UserMedia();
@@ -2735,24 +3597,79 @@ function App() {
         autoGainControl: false,
       });
       const micVol = new Tone.Volume(micVolume);
+      const micPitchNode = new Tone.PitchShift({
+        pitch: micPitch,
+        windowSize: 0.08,
+        delayTime: 0.03,
+        feedback: 0,
+        wet: Math.abs(micPitch) > 0.05 ? 1 : 0,
+      });
+      const micHp = new Tone.Filter({ type: 'highpass', frequency: 40, Q: 0.7 });
+      const micLp = new Tone.Filter({ type: 'lowpass', frequency: 18000, Q: 0.7 });
+      const micCrush = new Tone.BitCrusher({
+        bits: 4,
+        wet: (micCrushAmount / 100) * MIC_CRUSH_WET_MAX,
+      });
+      const micChorus = new Tone.Chorus({
+        frequency: 1.6,
+        delayTime: 3.5,
+        depth: 0.55,
+        wet: (micChorusAmount / 100) * MIC_CHORUS_WET_MAX,
+      }).start();
       const micEcho = new Tone.FeedbackDelay({
         delayTime: MIC_ECHO_TIME,
         feedback: MIC_ECHO_FEEDBACK,
         wet: micEchoEnabled ? (micEchoAmount / 100) * MIC_ECHO_WET_MAX : 0,
       });
+      const micReverb = new Tone.Freeverb({
+        roomSize: 0.75,
+        dampening: 3500,
+        wet: (micReverbAmount / 100) * MIC_REVERB_WET_MAX,
+      });
+
       mic.connect(micVol);
-      micVol.connect(micEcho);
-      // Monitor + rekaman lewat echo (wet=0 = dry murni)
-      // Musik ke recorder lewat recordCompDelay agar sejajar dengan latency mic
-      micEcho.connect(Tone.Destination);
-      micEcho.connect(recordDestRef.current);
+      micVol.connect(micPitchNode);
+      micPitchNode.connect(micHp);
+      micHp.connect(micLp);
+      micLp.connect(micCrush);
+      micCrush.connect(micChorus);
+      micChorus.connect(micEcho);
+      micEcho.connect(micReverb);
+      // Monitor + rekaman lewat FX chain
+      micReverb.connect(Tone.Destination);
+      micReverb.connect(recordDestRef.current);
+
+      // Pitch coach: analisa mic mentah (sebelum FX) vs stem vokal
+      const micPitchAnalyser = new Tone.Analyser('waveform', 2048);
+      mic.connect(micPitchAnalyser);
+      micPitchAnalyserRef.current = micPitchAnalyser;
+
       micRef.current = mic;
       micVolRef.current = micVol;
       micEchoRef.current = micEcho;
+      micFxRef.current = {
+        pitch: micPitchNode,
+        hp: micHp,
+        lp: micLp,
+        crush: micCrush,
+        chorus: micChorus,
+        echo: micEcho,
+        reverb: micReverb,
+      };
+      applyMicVoiceFx({
+        echoOn: micEchoEnabled,
+        echo: micEchoAmount,
+        reverb: micReverbAmount,
+        chorus: micChorusAmount,
+        pitch: micPitch,
+        crush: micCrushAmount,
+        filter: micFilterMode,
+      });
       const estimated = estimateMicLatencyMs();
       setRecordLatencyMs(estimated);
       applyRecordLatencyCompensation(estimated);
       setMicReady(true);
+      if (Tone.Transport.state === 'started') startPitchCoachLoop();
     } catch (e) {
       console.error(e);
       setMicError('Gagal mengakses microphone. Izinkan akses mic di browser/OS.');
@@ -2762,13 +3679,15 @@ function App() {
 
   const disableMic = () => {
     if (isRecordingKaraoke) stopKaraokeRecording();
+    stopPitchCoachLoop();
+    resetPitchCoachUi();
     try { micRef.current?.close(); } catch { /* ignore */ }
     try { micRef.current?.disconnect(); } catch { /* ignore */ }
     try { micRef.current?.dispose(); } catch { /* ignore */ }
-    try { micEchoRef.current?.dispose(); } catch { /* ignore */ }
+    disposeMicFxNodes();
+    disposeMicPitchAnalyser();
     try { micVolRef.current?.dispose(); } catch { /* ignore */ }
     micRef.current = null;
-    micEchoRef.current = null;
     micVolRef.current = null;
     setMicReady(false);
   };
@@ -2778,22 +3697,115 @@ function App() {
     if (micVolRef.current) micVolRef.current.volume.value = val;
   };
 
-  const applyMicEchoWet = (enabled, amount) => {
-    if (!micEchoRef.current) return;
-    micEchoRef.current.wet.value = enabled ? (amount / 100) * MIC_ECHO_WET_MAX : 0;
+  const applyMicVoiceFx = ({
+    echoOn = micEchoEnabled,
+    echo = micEchoAmount,
+    reverb = micReverbAmount,
+    chorus = micChorusAmount,
+    pitch = micPitch,
+    crush = micCrushAmount,
+    filter = micFilterMode,
+  } = {}) => {
+    const fx = micFxRef.current;
+    if (!fx) return;
+
+    if (fx.echo) {
+      fx.echo.wet.value = echoOn ? (echo / 100) * MIC_ECHO_WET_MAX : 0;
+    }
+    if (fx.reverb) {
+      fx.reverb.wet.value = (reverb / 100) * MIC_REVERB_WET_MAX;
+    }
+    if (fx.chorus) {
+      fx.chorus.wet.value = (chorus / 100) * MIC_CHORUS_WET_MAX;
+    }
+    if (fx.crush) {
+      const bits = crush > 70 ? 3 : crush > 35 ? 4 : 5;
+      if (fx.crush.bits?.value !== undefined) fx.crush.bits.value = bits;
+      else fx.crush.bits = bits;
+      fx.crush.wet.value = (crush / 100) * MIC_CRUSH_WET_MAX;
+    }
+    if (fx.pitch) {
+      fx.pitch.pitch = pitch;
+      fx.pitch.wet.value = Math.abs(pitch) > 0.05 ? 1 : 0;
+    }
+    if (fx.hp && fx.lp) {
+      if (filter === 'radio') {
+        fx.hp.frequency.value = 650;
+        fx.lp.frequency.value = 2800;
+      } else if (filter === 'robot') {
+        fx.hp.frequency.value = 220;
+        fx.lp.frequency.value = 4200;
+      } else {
+        fx.hp.frequency.value = 40;
+        fx.lp.frequency.value = 18000;
+      }
+    }
+  };
+
+  const applyMicVoicePreset = (presetId) => {
+    const preset = MIC_VOICE_PRESETS[presetId];
+    if (!preset) return;
+    setMicVoicePreset(presetId);
+    setMicEchoEnabled(preset.echoOn);
+    setMicEchoAmount(preset.echo);
+    setMicReverbAmount(preset.reverb);
+    setMicChorusAmount(preset.chorus);
+    setMicPitch(preset.pitch);
+    setMicCrushAmount(preset.crush);
+    setMicFilterMode(preset.filter);
+    applyMicVoiceFx({
+      echoOn: preset.echoOn,
+      echo: preset.echo,
+      reverb: preset.reverb,
+      chorus: preset.chorus,
+      pitch: preset.pitch,
+      crush: preset.crush,
+      filter: preset.filter,
+    });
+  };
+
+  const markMicVoiceCustom = () => {
+    if (micVoicePreset !== 'custom') setMicVoicePreset('custom');
   };
 
   const handleMicEchoToggle = () => {
     setMicEchoEnabled((prev) => {
       const next = !prev;
-      applyMicEchoWet(next, micEchoAmount);
+      markMicVoiceCustom();
+      applyMicVoiceFx({ echoOn: next, echo: micEchoAmount });
       return next;
     });
   };
 
   const handleMicEchoAmountChange = (val) => {
     setMicEchoAmount(val);
-    applyMicEchoWet(micEchoEnabled, val);
+    markMicVoiceCustom();
+    applyMicVoiceFx({ echoOn: micEchoEnabled || val > 0, echo: val });
+    if (val > 0 && !micEchoEnabled) setMicEchoEnabled(true);
+  };
+
+  const handleMicReverbAmountChange = (val) => {
+    setMicReverbAmount(val);
+    markMicVoiceCustom();
+    applyMicVoiceFx({ reverb: val });
+  };
+
+  const handleMicChorusAmountChange = (val) => {
+    setMicChorusAmount(val);
+    markMicVoiceCustom();
+    applyMicVoiceFx({ chorus: val });
+  };
+
+  const handleMicPitchChange = (val) => {
+    setMicPitch(val);
+    markMicVoiceCustom();
+    applyMicVoiceFx({ pitch: val });
+  };
+
+  const handleMicCrushAmountChange = (val) => {
+    setMicCrushAmount(val);
+    markMicVoiceCustom();
+    applyMicVoiceFx({ crush: val });
   };
 
   const handleRecordLatencyChange = (ms) => {
@@ -2846,6 +3858,7 @@ function App() {
       recordingTimerRef.current = setInterval(() => {
         setRecordingSeconds((s) => s + 1);
       }, 1000);
+      startPitchCoachLoop();
 
       // Mulai playback dari awal / trim start
       if (Tone.Transport.state !== 'started') {
@@ -2931,6 +3944,9 @@ function App() {
           eq_high: eqHigh,
           eq_bands: eqBands,
           compressor_enabled: compressorEnabled,
+          vocal_leveler_enabled: vocalLevelerEnabled,
+          vocal_leveler_target: vocalLevelerTarget,
+          vocal_deesser_amount: vocalDeEsserAmount,
           master_volume: masterVolume,
           limiter_enabled: limiterEnabled,
           normalize_enabled: normalizeEnabled,
@@ -4006,32 +5022,6 @@ function App() {
                       />
                       <span>{recordLatencyMs} ms</span>
                     </div>
-                    <div className="karaoke-mic-echo">
-                      <button
-                        type="button"
-                        className={`karaoke-echo-btn ${micEchoEnabled ? 'active' : ''}`}
-                        onClick={handleMicEchoToggle}
-                        disabled={!micReady}
-                        title="Echo/delay untuk suara mic (monitor + rekaman)"
-                      >
-                        Echo {micEchoEnabled ? 'ON' : 'OFF'}
-                      </button>
-                      <div className="karaoke-mic-vol">
-                        <label>Echo</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="5"
-                          value={micEchoAmount}
-                          disabled={!micReady || !micEchoEnabled}
-                          onChange={(e) => handleMicEchoAmountChange(parseFloat(e.target.value))}
-                          className="accent-slider"
-                          title="Kekuatan echo mic"
-                        />
-                        <span>{micEchoAmount}%</span>
-                      </div>
-                    </div>
                     {!isRecordingKaraoke ? (
                       <button
                         type="button"
@@ -4048,6 +5038,173 @@ function App() {
                         <span>Stop</span>
                       </button>
                     )}
+                  </div>
+
+                  <div className={`karaoke-pitch-coach ${micReady ? '' : 'disabled'}`}>
+                    <div className="karaoke-pitch-coach-header">
+                      <Music size={16} color="#2ec4b6" />
+                      <strong>Pitch Coach</strong>
+                      <span className={`karaoke-pitch-status karaoke-pitch-status--${pitchCoachStatus}`}>
+                        {pitchCoachStatus === 'ok' && 'Pas ✓'}
+                        {pitchCoachStatus === 'high' && 'Terlalu tinggi ↑'}
+                        {pitchCoachStatus === 'low' && 'Terlalu rendah ↓'}
+                        {pitchCoachStatus === 'quiet' && 'Nyanyikan / putar lagu'}
+                        {pitchCoachStatus === 'idle' && (micReady ? 'Putar lagu untuk mulai' : 'Aktifkan mic dulu')}
+                      </span>
+                    </div>
+                    <div className="karaoke-pitch-meter" aria-hidden="true">
+                      <div className="karaoke-pitch-meter-track">
+                        <div className="karaoke-pitch-meter-center" />
+                        <div
+                          className={`karaoke-pitch-meter-needle karaoke-pitch-meter-needle--${pitchCoachStatus}`}
+                          style={{
+                            left: `${Math.min(100, Math.max(0, 50 + (pitchCoachCents / 600) * 50))}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="karaoke-pitch-meter-labels">
+                        <span>Rendah</span>
+                        <span>Pas</span>
+                        <span>Tinggi</span>
+                      </div>
+                    </div>
+                    <div className="karaoke-pitch-notes">
+                      <span>Mic: <strong>{pitchCoachMicNote}</strong></span>
+                      <span>
+                        {pitchCoachStatus === 'ok' || pitchCoachStatus === 'high' || pitchCoachStatus === 'low'
+                          ? `${pitchCoachCents >= 0 ? '+' : ''}${(pitchCoachCents / 100).toFixed(1)} semitone`
+                          : '—'}
+                      </span>
+                      <span>Vokal: <strong>{pitchCoachVocalNote}</strong></span>
+                    </div>
+                    <p className="karaoke-pitch-hint">
+                      Bandingkan nada mic dengan stem vokal (oktaf diabaikan). Mute vokal tetap bisa — analisa dari sinyal internal.
+                    </p>
+                  </div>
+
+                  <div className={`karaoke-voice-fx ${micReady ? '' : 'disabled'}`}>
+                    <div className="karaoke-voice-fx-header">
+                      <Sparkles size={16} color="#c4a7ff" />
+                      <strong>Voice Effect</strong>
+                      <span className="karaoke-voice-fx-badge">
+                        {micVoicePreset === 'custom'
+                          ? 'Custom'
+                          : (MIC_VOICE_PRESETS[micVoicePreset]?.label || 'Natural')}
+                      </span>
+                    </div>
+                    <p className="karaoke-voice-fx-hint">
+                      Efek hanya untuk suara mic (monitor + rekaman). Pitch besar bisa menambah latency.
+                    </p>
+                    <div className="karaoke-voice-presets">
+                      {Object.entries(MIC_VOICE_PRESETS).map(([id, preset]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`karaoke-voice-preset-btn ${micVoicePreset === id ? 'active' : ''}`}
+                          disabled={!micReady}
+                          onClick={() => applyMicVoicePreset(id)}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="karaoke-voice-sliders">
+                      <div className="karaoke-mic-vol">
+                        <label>Reverb</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          value={micReverbAmount}
+                          disabled={!micReady}
+                          onChange={(e) => handleMicReverbAmountChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                        />
+                        <span>{micReverbAmount}%</span>
+                      </div>
+                      <div className="karaoke-mic-vol">
+                        <label>Echo</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          value={micEchoAmount}
+                          disabled={!micReady}
+                          onChange={(e) => handleMicEchoAmountChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                        />
+                        <span>{micEchoEnabled || micEchoAmount > 0 ? `${micEchoAmount}%` : 'OFF'}</span>
+                      </div>
+                      <div className="karaoke-mic-vol">
+                        <label>Chorus</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          value={micChorusAmount}
+                          disabled={!micReady}
+                          onChange={(e) => handleMicChorusAmountChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                        />
+                        <span>{micChorusAmount}%</span>
+                      </div>
+                      <div className="karaoke-mic-vol">
+                        <label>Pitch</label>
+                        <input
+                          type="range"
+                          min="-8"
+                          max="8"
+                          step="1"
+                          value={micPitch}
+                          disabled={!micReady}
+                          onChange={(e) => handleMicPitchChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                        />
+                        <span>{micPitch > 0 ? `+${micPitch}` : micPitch}</span>
+                      </div>
+                      <div className="karaoke-mic-vol">
+                        <label>Robot</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          value={micCrushAmount}
+                          disabled={!micReady}
+                          onChange={(e) => handleMicCrushAmountChange(parseFloat(e.target.value))}
+                          className="accent-slider"
+                        />
+                        <span>{micCrushAmount > 0 ? `${micCrushAmount}%` : 'OFF'}</span>
+                      </div>
+                      <div className="karaoke-voice-echo-toggle">
+                        <button
+                          type="button"
+                          className={`karaoke-echo-btn ${micEchoEnabled ? 'active' : ''}`}
+                          onClick={handleMicEchoToggle}
+                          disabled={!micReady}
+                          title="Nyala/mati echo mic"
+                        >
+                          Echo {micEchoEnabled ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                          type="button"
+                          className={`karaoke-echo-btn ${micFilterMode === 'radio' ? 'active' : ''}`}
+                          disabled={!micReady}
+                          onClick={() => {
+                            const next = micFilterMode === 'radio' ? 'none' : 'radio';
+                            setMicFilterMode(next);
+                            markMicVoiceCustom();
+                            applyMicVoiceFx({ filter: next });
+                          }}
+                          title="Efek radio/telephone"
+                        >
+                          Radio {micFilterMode === 'radio' ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   {micError && <p className="karaoke-record-error">{micError}</p>}
                   {recordedKaraokeUrl && (
@@ -4176,6 +5333,29 @@ function App() {
               </div>
             </div>
 
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '2rem', marginBottom: '1.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <ListMusic size={22} color="var(--text-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>Mixer Instrumen</h3>
+              </div>
+              <button 
+                onClick={handleAutoBalance}
+                title="Atur volume & pan instrumen secara otomatis agar seimbang"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  padding: '0.5rem 1rem', borderRadius: '8px', border: 'none',
+                  background: 'linear-gradient(135deg, #06d6a0, #118ab2)', color: '#fff',
+                  cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700,
+                  boxShadow: '0 4px 15px rgba(6, 214, 160, 0.3)',
+                  transition: 'transform 0.2s'
+                }}
+                onMouseOver={(e) => { e.currentTarget.style.transform = 'scale(1.05)'; }}
+                onMouseOut={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+              >
+                <Sparkles size={16} /> Auto Balance
+              </button>
+            </div>
+
             <div className="mixer-grid">
               {INSTRUMENTS.map(inst => (
                 <div className="mixer-channel glass-panel" key={inst.id} style={{ '--theme-color': inst.color }}>
@@ -4198,7 +5378,42 @@ function App() {
                   </div>
 
                   <div className="channel-db-label" style={{ color: inst.color }}>
-                    {volumes[inst.id] <= -60 ? '-∞' : (volumes[inst.id] > 0 ? '+' : '') + Math.round(volumes[inst.id])} <span className="db-unit">dB</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="channel-db-input"
+                      title="Ketik nilai dB lalu Enter"
+                      aria-label={`${inst.label} volume dB`}
+                      value={
+                        volumeDbEdit.id === inst.id
+                          ? volumeDbEdit.text
+                          : formatVolumeDb(volumes[inst.id])
+                      }
+                      onFocus={(e) => {
+                        const text = formatVolumeDb(volumes[inst.id]);
+                        setVolumeDbEdit({ id: inst.id, text: text === '-∞' ? '-60' : text.replace(/^\+/, '') });
+                        e.target.select();
+                      }}
+                      onChange={(e) => setVolumeDbEdit({ id: inst.id, text: e.target.value })}
+                      onBlur={(e) => {
+                        if (volumeDbSkipBlurRef.current) {
+                          volumeDbSkipBlurRef.current = false;
+                          setVolumeDbEdit({ id: null, text: '' });
+                          return;
+                        }
+                        commitVolumeDb(inst.id, e.target.value);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.currentTarget.blur();
+                        } else if (e.key === 'Escape') {
+                          volumeDbSkipBlurRef.current = true;
+                          setVolumeDbEdit({ id: null, text: '' });
+                          e.currentTarget.blur();
+                        }
+                      }}
+                    />
+                    <span className="db-unit">dB</span>
                   </div>
 
                   <div className="channel-pan-control">
@@ -4251,7 +5466,16 @@ function App() {
                       className="accent-slider eq-slider"
                       style={{ '--slider-color': '#2ec4b6' }}
                     />
-                    <span style={{ fontSize: '0.8rem', color: '#2ec4b6', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqLow > 0 ? '+' : ''}{eqLow} dB</span>
+                    <EditableValue
+                      value={eqLow}
+                      min={-12}
+                      max={12}
+                      unit="dB"
+                      onCommit={handleEqLowChange}
+                      className="enhancer-db-value"
+                      style={{ color: '#2ec4b6' }}
+                      ariaLabel="Bass dB"
+                    />
                   </div>
                   {/* Mid */}
                   <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
@@ -4263,7 +5487,16 @@ function App() {
                       className="accent-slider eq-slider"
                       style={{ '--slider-color': '#ff9f1c' }}
                     />
-                    <span style={{ fontSize: '0.8rem', color: '#ff9f1c', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqMid > 0 ? '+' : ''}{eqMid} dB</span>
+                    <EditableValue
+                      value={eqMid}
+                      min={-12}
+                      max={12}
+                      unit="dB"
+                      onCommit={handleEqMidChange}
+                      className="enhancer-db-value"
+                      style={{ color: '#ff9f1c' }}
+                      ariaLabel="Mid dB"
+                    />
                   </div>
                   {/* Treble */}
                   <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1 }}>
@@ -4275,7 +5508,16 @@ function App() {
                       className="accent-slider eq-slider"
                       style={{ '--slider-color': '#3a86ff' }}
                     />
-                    <span style={{ fontSize: '0.8rem', color: '#3a86ff', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{eqHigh > 0 ? '+' : ''}{eqHigh} dB</span>
+                    <EditableValue
+                      value={eqHigh}
+                      min={-12}
+                      max={12}
+                      unit="dB"
+                      onCommit={handleEqHighChange}
+                      className="enhancer-db-value"
+                      style={{ color: '#3a86ff' }}
+                      ariaLabel="Treble dB"
+                    />
                   </div>
                   {/* Master Volume */}
                   <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', flex: 1, borderLeft: '1px solid rgba(255,255,255,0.1)', paddingLeft: '1.5rem', marginLeft: '0.5rem' }}>
@@ -4287,7 +5529,18 @@ function App() {
                       className="accent-slider eq-slider"
                       style={{ '--slider-color': '#f15bb5' }}
                     />
-                    <span style={{ fontSize: '0.8rem', color: '#f15bb5', fontWeight: 700, minWidth: '40px', textAlign: 'center' }}>{masterVolume <= -60 ? '-∞' : (masterVolume > 0 ? '+' : '') + masterVolume} dB</span>
+                    <EditableValue
+                      value={masterVolume}
+                      min={-60}
+                      max={12}
+                      unit="dB"
+                      allowInf
+                      formatDisplay={(v) => (v <= -60 ? '-∞' : `${v > 0 ? '+' : ''}${v}`)}
+                      onCommit={handleMasterVolumeChange}
+                      className="enhancer-db-value"
+                      style={{ color: '#f15bb5' }}
+                      ariaLabel="Master volume dB"
+                    />
                   </div>
                 </div>
 
@@ -4434,6 +5687,54 @@ function App() {
                       {delayEnabled ? 'ON' : 'OFF'}
                     </button>
                   </div>
+                  {/* Analog Warmth Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Warmth</label>
+                    <button 
+                      onClick={handleWarmthToggle}
+                      title="Saturasi analog (Tape/Tube) untuk menebalkan suara"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: warmthEnabled 
+                          ? 'linear-gradient(135deg, #f94144, #f3722c)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: warmthEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: warmthEnabled ? '0 4px 15px rgba(249, 65, 68, 0.35)' : 'none'
+                      }}
+                    >
+                      {warmthEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                  {/* Stereo Widener Toggle */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Widener</label>
+                    <button 
+                      onClick={handleWidenerToggle}
+                      title="Perlebar dimensi stereo agar lebih megah"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: widenerEnabled 
+                          ? 'linear-gradient(135deg, #4cc9f0, #4361ee)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: widenerEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: widenerEnabled ? '0 4px 15px rgba(67, 97, 238, 0.35)' : 'none'
+                      }}
+                    >
+                      {widenerEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -4441,16 +5742,26 @@ function App() {
               <div className="graphic-eq-section">
                 <div className="graphic-eq-header">
                   <span className="graphic-eq-title">Graphic EQ · 10 Band</span>
-                  <button type="button" className="graphic-eq-reset" onClick={handleEqBandsReset} title="Reset semua band ke 0 dB">
-                    <RotateCcw size={14} /> Reset
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button type="button" className="graphic-eq-reset" onClick={handleAutoEq} title="Terapkan preset mastering (Clarity & Hi-Fi)" style={{ color: '#00bbf9', borderColor: 'rgba(0, 187, 249, 0.3)', background: 'rgba(0, 187, 249, 0.05)' }}>
+                      <Sparkles size={14} /> Auto Magic
+                    </button>
+                    <button type="button" className="graphic-eq-reset" onClick={handleEqBandsReset} title="Reset semua band ke 0 dB">
+                      <RotateCcw size={14} /> Reset
+                    </button>
+                  </div>
                 </div>
                 <div className="graphic-eq">
                   {EQ_BAND_LABELS.map((label, i) => (
                     <div key={label} className="graphic-eq-band">
-                      <span className="graphic-eq-gain">
-                        {eqBands[i] > 0 ? '+' : ''}{eqBands[i]}
-                      </span>
+                      <EditableValue
+                        value={eqBands[i]}
+                        min={-12}
+                        max={12}
+                        onCommit={(val) => handleEqBandChange(i, val)}
+                        className="graphic-eq-gain graphic-eq-gain-edit"
+                        ariaLabel={`EQ ${label} Hz dB`}
+                      />
                       <input
                         type="range"
                         min="-12"
@@ -4465,6 +5776,156 @@ function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+
+            {/* Vocal Processing Panel */}
+            <div className="audio-enhancer glass-panel" style={{ marginTop: '1.5rem', padding: '1.5rem', borderLeft: '4px solid #ff477e' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.2rem', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <Mic2 size={22} color="#ff477e" />
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)' }}>Vocal Processing</h3>
+                  <span style={{ fontSize: '0.75rem', backgroundColor: '#ff477e22', color: '#ff477e', padding: '0.2rem 0.5rem', borderRadius: '4px' }}>Khusus Stem Vokal</span>
+                </div>
+                
+                <button 
+                  onClick={handleAutoVocalProcessing}
+                  title="Terapkan preset standar industri secara otomatis"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.4rem',
+                    padding: '0.4rem 0.8rem', borderRadius: '6px', border: '1px solid #ff477e',
+                    background: 'rgba(255, 71, 126, 0.1)', color: '#ff477e',
+                    cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600,
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseOver={(e) => { e.currentTarget.style.background = '#ff477e'; e.currentTarget.style.color = '#fff'; }}
+                  onMouseOut={(e) => { e.currentTarget.style.background = 'rgba(255, 71, 126, 0.1)'; e.currentTarget.style.color = '#ff477e'; }}
+                >
+                  <Sparkles size={14} /> Auto Magic
+                </button>
+              </div>
+
+              <div className="enhancer-controls" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                
+                {/* Noise Gate Toggle */}
+                <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Noise Gate</label>
+                    <button 
+                      onClick={handleVocalGateToggle}
+                      title="Matikan suara mic secara otomatis saat tidak ada vokal"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: vocalGateEnabled 
+                          ? 'linear-gradient(135deg, #118ab2, #06d6a0)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: vocalGateEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: vocalGateEnabled ? '0 4px 15px rgba(6, 214, 160, 0.4)' : 'none'
+                      }}
+                    >
+                      {vocalGateEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Vocal Leveler Toggle & Slider */}
+                <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Leveler</label>
+                    <button 
+                      onClick={toggleVocalLeveler}
+                      title="Ratakan dinamika volume vokal secara otomatis"
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '10px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        transition: 'all 0.3s ease',
+                        background: vocalLevelerEnabled 
+                          ? 'linear-gradient(135deg, #ff477e, #ff9f1c)' 
+                          : 'rgba(255,255,255,0.08)',
+                        color: vocalLevelerEnabled ? '#fff' : 'var(--text-secondary)',
+                        boxShadow: vocalLevelerEnabled ? '0 4px 15px rgba(255, 71, 126, 0.4)' : 'none'
+                      }}
+                    >
+                      {vocalLevelerEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+
+                  <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem', opacity: vocalLevelerEnabled ? 1 : 0.5, pointerEvents: vocalLevelerEnabled ? 'auto' : 'none' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Target</label>
+                    <input 
+                      type="range" min="-32" max="-10" step="1" 
+                      value={vocalLevelerTarget} 
+                      onChange={handleVocalLevelerTargetChange} 
+                      className="accent-slider eq-slider"
+                      style={{ '--slider-color': '#ff477e', height: '80px' }}
+                    />
+                    <EditableValue
+                      value={vocalLevelerTarget}
+                      min={-32}
+                      max={-10}
+                      unit="LUFS"
+                      formatDisplay={(v) => String(v)}
+                      onCommit={(val) => {
+                        setVocalLevelerTarget(val);
+                        if (vocalLevelerRef.current && vocalLevelerEnabled) {
+                          vocalLevelerRef.current.threshold.value = val;
+                        }
+                      }}
+                      className="enhancer-db-value"
+                      style={{ color: '#ff477e' }}
+                      ariaLabel="Vocal leveler target LUFS"
+                    />
+                  </div>
+                </div>
+
+                {/* De-Esser Slider */}
+                <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '12px' }}>
+                  <div className="eq-slider-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.4rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>De-Esser</label>
+                    <input 
+                      type="range" min="0" max="20" step="1" 
+                      value={vocalDeEsserAmount} 
+                      onChange={handleVocalDeEsserChange} 
+                      className="accent-slider eq-slider"
+                      style={{ '--slider-color': '#2ec4b6', height: '80px' }}
+                    />
+                    <EditableValue
+                      value={vocalDeEsserAmount}
+                      min={0}
+                      max={20}
+                      unit={vocalDeEsserAmount > 0 ? 'dB' : ''}
+                      formatDisplay={(v) => (v > 0 ? `-${v}` : 'OFF')}
+                      formatEdit={(v) => (v > 0 ? String(-v) : '0')}
+                      parseInput={(raw) => {
+                        const text = String(raw ?? '').trim();
+                        if (!text || /^off$/i.test(text)) return 0;
+                        const parsed = parseNumericInput(text, { min: -20, max: 20 });
+                        if (parsed == null) return null;
+                        return Math.min(20, Math.abs(parsed));
+                      }}
+                      onCommit={(val) => {
+                        setVocalDeEsserAmount(val);
+                        if (vocalDeEsserRef.current) {
+                          vocalDeEsserRef.current.gain.value = val > 0 ? -val : 0;
+                        }
+                      }}
+                      className="enhancer-db-value"
+                      style={{ color: '#2ec4b6' }}
+                      ariaLabel="De-Esser dB"
+                    />
+                  </div>
+                </div>
+
               </div>
             </div>
 
@@ -4572,6 +6033,9 @@ function App() {
                           </span>
                           <span className="mp3-lyrics-search-item-meta">
                             {item.has_sync && <span className="mp3-lyrics-badge sync">LRC</span>}
+                            {item.synced_lines > 0 && (
+                              <span className="mp3-lyrics-badge lines">{item.synced_lines} baris</span>
+                            )}
                             {item.duration > 0 && <span>{formatDurationSec(item.duration)}</span>}
                           </span>
                         </button>
@@ -4605,10 +6069,10 @@ function App() {
                   <input
                     id="stem-lyrics-offset"
                     type="range"
-                    min="-5000"
-                    max="5000"
-                    step="50"
-                    value={stemLyricsOffsetMs}
+                    min="-120000"
+                    max="120000"
+                    step="100"
+                    value={Math.max(-120000, Math.min(120000, stemLyricsOffsetMs))}
                     onChange={(e) => setStemLyricsOffsetMs(parseInt(e.target.value, 10))}
                   />
                   <label htmlFor="stem-lyrics-speed" className="mp3-lyrics-speed-label">
@@ -4624,7 +6088,7 @@ function App() {
                     value={stemLyricsSpeedPct}
                     onChange={(e) => setStemLyricsSpeedPct(parseInt(e.target.value, 10))}
                   />
-                  <p className="mp3-lyrics-sync-hint">Double-klik baris yang sedang dinyanyikan. Tempo {Math.round(tempo * 100)}% sudah dihitung otomatis.</p>
+                  <p className="mp3-lyrics-sync-hint">Double-klik baris yang sedang dinyanyikan. Tempo {Math.round(tempo * 100)}% sudah dihitung otomatis. Hindari ubah kecepatan kecuali awal & akhir sama-sama meleset.</p>
                   <button
                     type="button"
                     className="cancel-btn mp3-lyrics-sync-now-btn"
@@ -4647,7 +6111,7 @@ function App() {
                         onDoubleClick={() => syncStemLyricLineToNow(i)}
                         title="Double-klik saat baris ini dinyanyikan"
                       >
-                        {lineState === 'active' && line.words?.length > 1 ? (
+                        {lineState === 'active' && lineHasUsableWordTimings(line) ? (
                           line.words.map((w, wi) => (
                             <span
                               key={wi}
@@ -4700,13 +6164,35 @@ function App() {
                 <div className="yt-input-header">
                   <Download size={48} className="yt-icon" />
                   <h3>Web Audio Converter</h3>
-                  <p>Paste link YouTube untuk mengunduh audio dengan cepat.</p>
+                  <p>
+                    {yt2mp3MediaType === 'mp4'
+                      ? 'Cari / paste link YouTube untuk unduh video lagu / music video (MP4).'
+                      : 'Paste link YouTube untuk mengunduh audio (MP3) dengan cepat.'}
+                  </p>
+                </div>
+                <div className="yt2mp3-media-toggle" role="group" aria-label="Jenis unduhan">
+                  <button
+                    type="button"
+                    className={`yt2mp3-media-btn ${yt2mp3MediaType === 'mp3' ? 'active' : ''}`}
+                    onClick={() => { setYt2mp3MediaType('mp3'); setYt2mp3SearchResults([]); setYt2mp3Error(''); }}
+                  >
+                    <Music size={16} /> Audio MP3
+                  </button>
+                  <button
+                    type="button"
+                    className={`yt2mp3-media-btn ${yt2mp3MediaType === 'mp4' ? 'active' : ''}`}
+                    onClick={() => { setYt2mp3MediaType('mp4'); setYt2mp3SearchResults([]); setYt2mp3Error(''); }}
+                  >
+                    <MonitorPlay size={16} /> Video Klip MP4
+                  </button>
                 </div>
                 <div className="yt-url-input" style={{ display: 'flex', gap: '0.5rem', position: 'relative', width: '100%' }}>
                   <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
                     <input
                       type="text"
-                      placeholder="Paste link ATAU ketik judul lagu... (contoh: Coldplay Yellow)"
+                      placeholder={yt2mp3MediaType === 'mp4'
+                        ? 'Paste link ATAU ketik judul video klip... (contoh: Coldplay Yellow official video)'
+                        : 'Paste link ATAU ketik judul lagu... (contoh: Coldplay Yellow)'}
                       value={yt2mp3Url}
                       onChange={(e) => setYt2mp3Url(e.target.value)}
                       style={{ flex: 1, paddingRight: '40px' }}
@@ -4773,7 +6259,7 @@ function App() {
                       const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/search`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                        body: JSON.stringify({ query: yt2mp3Url })
+                        body: JSON.stringify({ query: yt2mp3Url, media_type: yt2mp3MediaType })
                       });
                       const data = await res.json();
                       if(res.ok) {
@@ -4787,7 +6273,7 @@ function App() {
                     } catch(e) { setYt2mp3Error('Kesalahan jaringan saat mencari'); }
                     setYt2mp3IsSearching(false);
                   }} disabled={!yt2mp3Url.trim() || yt2mp3IsSearching}>
-                    {yt2mp3IsSearching ? <Loader2 size={20} className="spinner" /> : <Search size={20} />} Cari Lagu
+                    {yt2mp3IsSearching ? <Loader2 size={20} className="spinner" /> : <Search size={20} />} {yt2mp3MediaType === 'mp4' ? 'Cari Video' : 'Cari Lagu'}
                   </button>
                 </div>
                 {yt2mp3Error && <div className="auth-message error">{yt2mp3Error}</div>}
@@ -4813,18 +6299,19 @@ function App() {
                               const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/prepare`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                                body: JSON.stringify({ url: result.url })
+                                body: JSON.stringify({ url: result.url, media_type: yt2mp3MediaType })
                               });
                               const data = await res.json();
                               if(res.ok) {
                                 setYt2mp3JobId(data.job_id);
+                                if (data.media_type) setYt2mp3MediaType(data.media_type);
                                 setYt2mp3Status('downloading');
                               } else {
                                 setYt2mp3Status('error'); setYt2mp3Error(data.detail || 'Gagal memproses');
                               }
                             } catch(e) { setYt2mp3Status('error'); setYt2mp3Error('Kesalahan jaringan'); }
                           }}>
-                            <Download size={16} style={{ marginRight: '4px' }} /> Unduh
+                            <Download size={16} style={{ marginRight: '4px' }} /> Unduh {yt2mp3MediaType === 'mp4' ? 'MP4' : 'MP3'}
                           </button>
                         </div>
                       ))}
@@ -4836,7 +6323,7 @@ function App() {
             {(yt2mp3Status === 'preparing' || yt2mp3Status === 'downloading') && (
               <div className="loading-card glass-panel">
                 <Loader2 size={48} className="spinner" />
-                <h3>{yt2mp3Status === 'preparing' ? 'Mempersiapkan...' : 'Mengunduh Audio...'}</h3>
+                <h3>{yt2mp3Status === 'preparing' ? 'Mempersiapkan...' : (yt2mp3MediaType === 'mp4' ? 'Mengunduh Video...' : 'Mengunduh Audio...')}</h3>
                 <div className="progress-section">
                   <div className="progress-info">
                     <span className="progress-percent">{yt2mp3Progress}%</span>
@@ -4854,11 +6341,11 @@ function App() {
             {yt2mp3Status === 'done' && (
               <div className="upload-card" style={{ borderColor: '#2ec4b6' }}>
                 <CheckCircle size={48} color="#2ec4b6" style={{ marginBottom: '1rem' }} />
-                <h3 style={{ color: '#2ec4b6' }}>Audio Siap Diunduh!</h3>
+                <h3 style={{ color: '#2ec4b6' }}>{yt2mp3MediaType === 'mp4' ? 'Video Siap Diunduh!' : 'Audio Siap Diunduh!'}</h3>
                 <p>{yt2mp3Title}</p>
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1rem' }}>
                   <a href={`${API_BASE_URL}/youtube-to-mp3/download/${yt2mp3JobId}`} className="process-btn" style={{ textDecoration: 'none', padding: '0.8rem 1.5rem' }} download>
-                    <Download size={18} /> Simpan MP3
+                    <Download size={18} /> Simpan {yt2mp3MediaType === 'mp4' ? 'MP4' : 'MP3'}
                   </a>
                   <button className="cancel-btn" onClick={() => { setYt2mp3Status('idle'); setYt2mp3Url(''); }}>
                     <RefreshCw size={16} /> Unduh Lainnya
@@ -4942,8 +6429,17 @@ function App() {
                         }
                       }}
                       onEnded={playMp3Next}
-                      onPlay={() => { setMp3IsPlaying(true); setMp3TrackLoading(false); }}
-                      onPause={() => setMp3IsPlaying(false)}
+                      onPlay={() => {
+                        setMp3IsPlaying(true);
+                        setMp3TrackLoading(false);
+                        if (mp3PitchPlayerRef.current) {
+                          syncMp3PitchPlayerToMedia(true);
+                        }
+                      }}
+                      onPause={() => {
+                        setMp3IsPlaying(false);
+                        syncMp3PitchPlayerToMedia(false);
+                      }}
                       onError={() => {
                         const mediaErr = mp3AudioRef.current?.error;
                         console.error('Media load error:', mediaErr);
@@ -4987,6 +6483,9 @@ function App() {
                           setMp3CurrentTime(t);
                           if (mp3AudioRef.current) mp3AudioRef.current.currentTime = t;
                           syncMp3LyricsToTime(t);
+                          if (mp3PitchPlayerRef.current) {
+                            syncMp3PitchPlayerToMedia(!mp3AudioRef.current?.paused);
+                          }
                         }}
                       />
                       <span className="mp3-time">{formatTime(mp3Duration)}</span>
@@ -5078,6 +6577,9 @@ function App() {
                                   <span className="mp3-lyrics-search-item-meta">
                                     {item.has_sync && <span className="mp3-lyrics-badge sync">LRC</span>}
                                     {!item.has_sync && item.has_plain && <span className="mp3-lyrics-badge plain">Teks</span>}
+                                    {item.synced_lines > 0 && (
+                                      <span className="mp3-lyrics-badge lines">{item.synced_lines} baris</span>
+                                    )}
                                     {item.duration > 0 && <span>{formatDurationSec(item.duration)}</span>}
                                     {mp3LyricsSelectLoading === item.id && <Loader2 size={12} className="spinner" />}
                                   </span>
@@ -5115,10 +6617,10 @@ function App() {
                           <input
                             id="mp3-lyrics-offset"
                             type="range"
-                            min="-5000"
-                            max="5000"
-                            step="50"
-                            value={trackSync.offsetMs}
+                            min="-120000"
+                            max="120000"
+                            step="100"
+                            value={Math.max(-120000, Math.min(120000, trackSync.offsetMs))}
                             onChange={(e) => {
                               const offsetMs = parseInt(e.target.value, 10);
                               setMp3TrackSync(currentTrack.id, { offsetMs });
@@ -5153,7 +6655,7 @@ function App() {
                             }}
                           />
                           <p className="mp3-lyrics-sync-hint">
-                            Double-klik baris yang sedang dinyanyikan untuk sinkronkan. Gunakan kecepatan jika awal/akhir lagu meleset.
+                            Double-klik baris yang sedang dinyanyikan untuk sinkronkan. Pakai kecepatan hanya jika awal & akhir sama-sama meleset (bisa bikin kejar-kejaran).
                           </p>
                           <button
                             type="button"
@@ -5185,7 +6687,7 @@ function App() {
                                 onDoubleClick={() => syncLyricLineToNow(i)}
                                 title="Double-klik saat baris ini dinyanyikan"
                               >
-                                {lineState === 'active' && line.words?.length > 1 ? (
+                                {lineState === 'active' && lineHasUsableWordTimings(line) ? (
                                   line.words.map((w, wi) => (
                                     <span
                                       key={wi}
@@ -5225,7 +6727,10 @@ function App() {
                           <button
                             type="button"
                             className="mp3-pitch-btn"
-                            onClick={() => { void Tone.start(); changeMp3Pitch(-1); }}
+                            onClick={async () => {
+                              try { await Tone.start(); } catch { /* ignore */ }
+                              await changeMp3Pitch(-1);
+                            }}
                             disabled={mp3Pitch <= -12}
                             title="Turunkan 1 semitone"
                           >
@@ -5237,7 +6742,10 @@ function App() {
                           <button
                             type="button"
                             className="mp3-pitch-btn"
-                            onClick={() => { void Tone.start(); changeMp3Pitch(1); }}
+                            onClick={async () => {
+                              try { await Tone.start(); } catch { /* ignore */ }
+                              await changeMp3Pitch(1);
+                            }}
                             disabled={mp3Pitch >= 12}
                             title="Naikkan 1 semitone"
                           >
@@ -5247,7 +6755,10 @@ function App() {
                             <button
                               type="button"
                               className="mp3-pitch-reset"
-                              onClick={() => { void Tone.start(); resetMp3Pitch(); }}
+                              onClick={async () => {
+                                try { await Tone.start(); } catch { /* ignore */ }
+                                await resetMp3Pitch();
+                              }}
                               title="Reset nada"
                             >
                               <RotateCcw size={13} />
@@ -5258,30 +6769,113 @@ function App() {
                     )}
                     {mp3SaveFeedback && (
                       <div
-                        className={`mp3-save-feedback mp3-save-feedback-${mp3SaveFeedback.type}`}
-                        role="status"
+                        className={`mp3-save-feedback mp3-save-feedback-${mp3SaveFeedback.type}${mp3SaveFeedback.revealPath ? ' mp3-save-feedback-clickable' : ''}`}
+                        role={mp3SaveFeedback.revealPath ? 'button' : 'status'}
+                        tabIndex={mp3SaveFeedback.revealPath ? 0 : undefined}
                         aria-live="polite"
+                        title={mp3SaveFeedback.revealPath ? 'Klik untuk buka folder dan highlight file' : undefined}
+                        onClick={() => {
+                          if (mp3SaveFeedback.revealPath) {
+                            void revealFileInExplorer(mp3SaveFeedback.revealPath);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (!mp3SaveFeedback.revealPath) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            void revealFileInExplorer(mp3SaveFeedback.revealPath);
+                          }
+                        }}
                       >
                         {mp3SaveFeedback.type === 'loading' && <Loader2 size={16} className="spinner" />}
                         {mp3SaveFeedback.type === 'success' && <CheckCircle size={16} />}
                         {mp3SaveFeedback.type === 'error' && <AlertTriangle size={16} />}
                         <span>{mp3SaveFeedback.message}</span>
+                        {mp3SaveFeedback.revealPath && <FolderOpen size={16} className="mp3-save-feedback-folder-icon" />}
                       </div>
                     )}
                     {mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics && (
-                      <button
-                        className="cancel-btn mp3-lyrics-download-btn"
-                        onClick={() => saveOrDownloadLyrics(mp3CurrentIndex)}
-                        disabled={mp3SavingLyrics}
-                      >
-                        {mp3SavingLyrics ? <Loader2 size={14} className="spinner" /> : <Download size={14} />}
-                        {mp3SavingLyrics
-                          ? ' Menyimpan...'
-                          : mp3FolderWritable
-                            ? ' Simpan Lirik ke Folder MP3'
-                            : ' Unduh File Lirik (.lrc)'}
-                      </button>
+                      <div className="mp3-lyrics-actions">
+                        <button
+                          className="cancel-btn mp3-lyrics-download-btn"
+                          onClick={() => saveOrDownloadLyrics(mp3CurrentIndex)}
+                          disabled={mp3SavingLyrics || mp3KaraokeExporting}
+                        >
+                          {mp3SavingLyrics ? <Loader2 size={14} className="spinner" /> : <Download size={14} />}
+                          {mp3SavingLyrics
+                            ? ' Menyimpan...'
+                            : mp3FolderWritable
+                              ? ' Simpan Lirik ke Folder MP3'
+                              : ' Unduh File Lirik (.lrc)'}
+                        </button>
+                        {isVideoFile(mp3Playlist[mp3CurrentIndex]?.fileName || mp3Playlist[mp3CurrentIndex]?.name)
+                          && mp3Playlist[mp3CurrentIndex]?.lyrics?.type === 'lrc' && (
+                          <button
+                            type="button"
+                            className="process-btn mp3-karaoke-video-btn"
+                            onClick={() => openKaraokeVideoSync(mp3CurrentIndex)}
+                            disabled={mp3KaraokeExporting || mp3SavingLyrics}
+                            title="Bakar lirik ke video (bisa koreksi sync dulu)"
+                          >
+                            {mp3KaraokeExporting ? <Loader2 size={14} className="spinner" /> : <MonitorPlay size={14} />}
+                            {mp3KaraokeExporting ? ' Membuat video...' : ' Buat Video Karaoke'}
+                          </button>
+                        )}
+                      </div>
                     )}
+                    {mp3KaraokeSyncOpen && mp3CurrentIndex >= 0 && (() => {
+                      const kTrack = mp3Playlist[mp3CurrentIndex];
+                      const kSync = getMp3TrackSync(kTrack.id);
+                      const panelOffsetSec = ((kSync.offsetMs || 0) / 1000).toFixed(1);
+                      return (
+                        <div className="mp3-karaoke-sync-modal" role="dialog" aria-modal="true" aria-labelledby="karaoke-sync-title">
+                          <div className="mp3-karaoke-sync-card">
+                            <h5 id="karaoke-sync-title"><MonitorPlay size={18} /> Sinkronkan Video Karaoke</h5>
+                            <p className="mp3-karaoke-sync-desc">
+                              Pastikan lirik sudah pas di panel kiri/atas, lalu koreksi tipis di sini jika perlu.
+                              Sync panel saat ini: <strong>{Number(panelOffsetSec) > 0 ? '+' : ''}{panelOffsetSec} dtk</strong>
+                              {kSync.speedPct !== 100 ? `, kecepatan ${kSync.speedPct}%` : ''}.
+                            </p>
+                            <label className="mp3-karaoke-sync-label" htmlFor="karaoke-burn-trim">
+                              Koreksi lirik di video
+                              <span>{mp3KaraokeBurnTrimMs > 0 ? '+' : ''}{(mp3KaraokeBurnTrimMs / 1000).toFixed(2)} dtk</span>
+                            </label>
+                            <input
+                              id="karaoke-burn-trim"
+                              type="range"
+                              min="-3000"
+                              max="3000"
+                              step="50"
+                              value={mp3KaraokeBurnTrimMs}
+                              onChange={(e) => setMp3KaraokeBurnTrimMs(parseInt(e.target.value, 10))}
+                            />
+                            <p className="mp3-karaoke-sync-hint">
+                              Geser ke kanan jika lirik di video muncul terlalu cepat; ke kiri jika terlalu lambat.
+                              Double-klik baris di panel lirik dulu agar dasar sync-nya benar.
+                            </p>
+                            <div className="mp3-karaoke-sync-actions">
+                              <button
+                                type="button"
+                                className="cancel-btn"
+                                disabled={mp3KaraokeExporting}
+                                onClick={() => setMp3KaraokeSyncOpen(false)}
+                              >
+                                Batal
+                              </button>
+                              <button
+                                type="button"
+                                className="process-btn"
+                                disabled={mp3KaraokeExporting}
+                                onClick={() => exportKaraokeVideo(mp3CurrentIndex)}
+                              >
+                                {mp3KaraokeExporting ? <Loader2 size={14} className="spinner" /> : <MonitorPlay size={14} />}
+                                {mp3KaraokeExporting ? ' Membuat...' : ' Lanjut Buat Video'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {mp3CurrentIndex >= 0 && !mp3Playlist[mp3CurrentIndex]?.lyrics && !mp3LyricsLoading && (
                       <div className="mp3-lyrics-empty">
                         {mp3Playlist[mp3CurrentIndex]?.lyricsNotFound ? (

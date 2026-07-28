@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "60EF-BFEF-97A3-4A2F-2AF4-4AF8-4911-7C40",
+    "license_type": "1m",
+    "customer_name": "anton2",
+    "issued_date": "2026-07-23T09:22:14.045408",
+    "expiry_date": "2026-08-22T09:22:14.045408",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "jaCm27u3NOJHLMP3FVG1/EcLiNOOAQxDMzOAaNBjkUb6ZXZUf9kXdXSlc2e5p299/zZIgOhNNAIH+gy2G+EM4KbK25PmEQKtBKzhkxykicmqZk1MIdmyicIB0RqiDW91RlwBRLk7aoTyT3XvGGLqmO6d7WnorXJL0xr4MmbW18AHfcSRJQCGIN9E0uFaFWAcvruMWX8Jo20jCXFnJZgYLZNKJpyAdk/iR3HLRb5BscYBS8NJx/t+klPRJOo1yU6kmhnd9G8AalvU+TK954th5Lz1dzo3KfdH1H6VRGOqPTcXeJq1tXJSd7fmlwbt8awflnOQUpdIGK7ER83sRRZmkw=="
+}

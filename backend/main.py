@@ -703,10 +703,13 @@ class ProjectSettings(BaseModel):
     eq_mid: float = 0.0
     eq_high: float = 0.0
     eq_bands: List[float] = []  # 10-band graphic EQ gains (dB)
+    vocal_leveler_enabled: bool = False
+    vocal_leveler_target: float = -28.0
+    vocal_deesser_amount: float = 0.0
     compressor_enabled: bool = False
     master_volume: float = 0.0
     limiter_enabled: bool = True
-    normalize_enabled: bool = True
+    normalize_enabled: bool = False
     denoise_enabled: bool = False
     reverb_enabled: bool = False
     delay_enabled: bool = False
@@ -838,10 +841,13 @@ class MixParams(BaseModel):
     eq_mid: float = 0.0    # -12 to 12 dB
     eq_high: float = 0.0   # -12 to 12 dB
     eq_bands: List[float] = []  # 10-band graphic EQ gains (dB), centers 31..16k Hz
+    vocal_leveler_enabled: bool = False
+    vocal_leveler_target: float = -28.0
+    vocal_deesser_amount: float = 0.0
     compressor_enabled: bool = False
     master_volume: float = 0.0  # dB
     limiter_enabled: bool = True
-    normalize_enabled: bool = True
+    normalize_enabled: bool = False
     denoise_enabled: bool = False
     reverb_enabled: bool = False
     delay_enabled: bool = False
@@ -902,8 +908,17 @@ async def export_mix(file_id: str, params: MixParams, current_user: dict = Depen
                 command.extend(["-i", stem_file])
                 vol = params.volumes.get(inst, 0)
                 pan_val = params.pans.get(inst, 0.0)  # -100 to 100
-                # Build per-stem filter: volume -> pan
-                stem_filter = f"[{input_idx}:a]volume={vol}dB"
+                # Build per-stem filter: volume -> pan -> leveler -> deesser
+                stem_filter_parts = [f"volume={vol}dB"]
+                if inst == "vocals":
+                    if getattr(params, "vocal_leveler_enabled", False):
+                        target = float(getattr(params, "vocal_leveler_target", -28.0))
+                        stem_filter_parts.append(f"loudnorm=I={target}:LRA=11:TP=-1.5")
+                    if getattr(params, "vocal_deesser_amount", 0.0) > 0:
+                        deesser_val = min(1.0, float(params.vocal_deesser_amount) / 20.0)
+                        stem_filter_parts.append(f"deesser=i={deesser_val}")
+                
+                stem_filter = f"[{input_idx}:a]" + ",".join(stem_filter_parts)
                 if pan_val != 0:
                     # Convert -100..100 to stereopan: L gain and R gain
                     # pan=0 -> center (L=R=1), pan=-100 -> full left (L=1,R=0)
@@ -1081,6 +1096,61 @@ async def download_export(filename: str):
     return FileResponse(filepath, media_type=media_type, filename=filename)
 
 
+def _sec_to_ass_time(t: float) -> str:
+    t = max(0.0, float(t) or 0.0)
+    total_cs = int(round(t * 100))
+    h = total_cs // 360000
+    m = (total_cs % 360000) // 6000
+    s = (total_cs % 6000) // 100
+    cs = total_cs % 100
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _escape_ass_text(text: str) -> str:
+    s = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    s = s.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+    return s.replace("\n", "\\N").strip()
+
+
+def _build_karaoke_ass(cues: list) -> str:
+    """Build ASS subtitle script from cues: [{start, end, text}, ...]."""
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # Sedikit di atas ukuran awal 68 agar terbaca tanpa memenuhi layar
+        "Style: Karaoke,Arial,64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,0,0,1,3,0,2,120,120,52,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines = []
+    for cue in cues:
+        try:
+            start = float(cue.get("start", 0))
+            end = float(cue.get("end", start + 4))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            end = start + 0.5
+        text = _escape_ass_text(str(cue.get("text") or ""))
+        if not text:
+            continue
+        lines.append(
+            f"Dialogue: 0,{_sec_to_ass_time(start)},{_sec_to_ass_time(end)},Karaoke,,0,0,0,,{text}"
+        )
+    return header + "\n".join(lines) + ("\n" if lines else "")
+
+
 @app.post("/karaoke/recording")
 async def save_karaoke_recording(
     file: UploadFile = File(...),
@@ -1130,6 +1200,249 @@ async def save_karaoke_recording(
     except Exception as e:
         print("Karaoke recording error:", e)
         return JSONResponse(status_code=500, content={"message": str(e)})
+
+
+def _ask_save_video_path(initial_name: str) -> Optional[str]:
+    """Native Save As dialog — returns absolute path or None if cancelled."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            root.lift()
+            root.focus_force()
+        except Exception:
+            pass
+        path = filedialog.asksaveasfilename(
+            parent=root,
+            title="Simpan Video Karaoke",
+            defaultextension=".mp4",
+            initialfile=initial_name or "karaoke.mp4",
+            filetypes=[("Video MP4", "*.mp4"), ("Semua file", "*.*")],
+        )
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        path = (path or "").strip()
+        if not path:
+            return None
+        if not path.lower().endswith(".mp4"):
+            path = f"{path}.mp4"
+        return os.path.abspath(path)
+    except Exception as e:
+        print("ask save video path error:", e)
+        return None
+
+
+def _finalize_karaoke_save(export_path: str, suggested_name: str, warning: str = "") -> dict:
+    """Copy export to user-chosen path via Save As; return API payload."""
+    chosen = _ask_save_video_path(suggested_name)
+    if not chosen:
+        return {
+            "status": "cancelled",
+            "message": "Penyimpanan dibatalkan",
+            "cancelled": True,
+        }
+    try:
+        dest_dir = os.path.dirname(chosen)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
+        shutil.copy2(export_path, chosen)
+    except Exception as e:
+        print("copy karaoke video error:", e)
+        return {
+            "status": "error",
+            "message": f"Gagal menyimpan ke lokasi yang dipilih: {e}",
+        }
+
+    final_name = os.path.basename(chosen)
+    payload = {
+        "status": "success",
+        "download_url": f"/download_export/{quote(os.path.basename(export_path))}",
+        "filename": final_name,
+        "saved_path": chosen,
+    }
+    if warning:
+        payload["warning"] = warning
+    return payload
+
+
+@app.post("/playlist/karaoke-video")
+async def create_playlist_karaoke_video(
+    video: UploadFile = File(...),
+    cues_json: str = Form("[]"),
+    pitch: float = Form(0),
+    display_name: str = Form(""),
+    current_user: dict = Depends(get_current_user),
+):
+    """Burn timed lyrics onto an MP4 (hardcoded karaoke video)."""
+    if not _resolve_ffmpeg_dir() and not shutil.which("ffmpeg"):
+        return JSONResponse(
+            status_code=500,
+            content={"message": "ffmpeg tidak ditemukan. Pastikan folder portable lengkap."},
+        )
+
+    try:
+        cues = json.loads(cues_json or "[]")
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=400, content={"message": "Format lirik tidak valid"})
+
+    if not isinstance(cues, list) or not cues:
+        return JSONResponse(
+            status_code=400,
+            content={"message": "Lirik ber-timestamp diperlukan untuk video karaoke"},
+        )
+
+    export_dir = os.path.join(app_data, "exports")
+    os.makedirs(export_dir, exist_ok=True)
+
+    src_name = video.filename or "video.mp4"
+    ext = os.path.splitext(src_name)[1].lower() or ".mp4"
+    if ext not in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"):
+        return JSONResponse(status_code=400, content={"message": "File harus berupa video (MP4/MOV/MKV/WEBM)"})
+
+    base = _safe_export_basename(display_name or os.path.splitext(src_name)[0])
+    # strip trailing media ext leftovers
+    for trail in (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mp3", ".m4a", ".wav"):
+        if base.lower().endswith(trail):
+            base = base[: -len(trail)].rstrip()
+    out_name = f"{base} karaoke.mp4"
+    out_path = os.path.join(export_dir, out_name)
+
+    work = tempfile.mkdtemp(prefix="karaoke_vid_")
+    in_name = f"input{ext}"
+    in_path = os.path.join(work, in_name)
+    ass_path = os.path.join(work, "lyrics.ass")
+
+    try:
+        with open(in_path, "wb") as f:
+            while True:
+                chunk = await video.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        if not os.path.getsize(in_path):
+            return JSONResponse(status_code=400, content={"message": "File video kosong"})
+
+        with open(ass_path, "w", encoding="utf-8-sig") as f:
+            f.write(_build_karaoke_ass(cues))
+
+        pitch_n = float(pitch or 0)
+        cmd = [
+            _ffmpeg_bin(), "-y",
+            "-i", in_name,
+            "-vf", "ass=lyrics.ass",
+        ]
+        if abs(pitch_n) >= 0.01:
+            pitch_factor = 2 ** (pitch_n / 12.0)
+            cmd.extend(["-af", f"rubberband=pitch={pitch_factor}"])
+        cmd.extend([
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "20",
+            "-c:a", "aac",
+            "-b:a", "256k",
+            "-ac", "2",
+            "-movflags", "+faststart",
+            out_path,
+        ])
+
+        subprocess.run(
+            cmd,
+            check=True,
+            cwd=work,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            return JSONResponse(status_code=500, content={"message": "Gagal membuat video karaoke"})
+
+        from starlette.concurrency import run_in_threadpool
+        result = await run_in_threadpool(_finalize_karaoke_save, out_path, out_name, "")
+        if result.get("cancelled"):
+            return JSONResponse(status_code=400, content=result)
+        if result.get("status") != "success":
+            return JSONResponse(status_code=500, content=result)
+        return result
+    except subprocess.CalledProcessError as e:
+        err = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        print("Karaoke video ffmpeg error:", err)
+        # Retry without rubberband if pitch filter unavailable
+        if abs(float(pitch or 0)) >= 0.01 and "rubberband" in err.lower():
+            try:
+                cmd2 = [
+                    _ffmpeg_bin(), "-y",
+                    "-i", in_name,
+                    "-vf", "ass=lyrics.ass",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "256k", "-ac", "2",
+                    "-movflags", "+faststart",
+                    out_path,
+                ]
+                subprocess.run(cmd2, check=True, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                from starlette.concurrency import run_in_threadpool
+                result = await run_in_threadpool(
+                    _finalize_karaoke_save,
+                    out_path,
+                    out_name,
+                    "Pitch diabaikan (filter rubberband tidak tersedia)",
+                )
+                if result.get("cancelled"):
+                    return JSONResponse(status_code=400, content=result)
+                if result.get("status") != "success":
+                    return JSONResponse(status_code=500, content=result)
+                return result
+            except subprocess.CalledProcessError as e2:
+                err2 = e2.stderr.decode("utf-8", errors="replace") if e2.stderr else ""
+                print("Karaoke video retry error:", err2)
+        return JSONResponse(
+            status_code=500,
+            content={"message": "Gagal membakar lirik ke video. Pastikan file video valid."},
+        )
+    except Exception as e:
+        print("Karaoke video error:", e)
+        return JSONResponse(status_code=500, content={"message": str(e)})
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+class RevealPathRequest(BaseModel):
+    path: str
+
+
+@app.post("/reveal-in-explorer")
+async def reveal_in_explorer(req: RevealPathRequest, current_user: dict = Depends(get_current_user)):
+    """Open OS file manager and select/highlight the given file."""
+    raw = (req.path or "").strip()
+    if not raw:
+        return JSONResponse(status_code=400, content={"message": "Path kosong"})
+
+    target = os.path.abspath(raw)
+    if not os.path.exists(target):
+        return JSONResponse(status_code=404, content={"message": "File tidak ditemukan"})
+
+    try:
+        if sys.platform.startswith("win"):
+            # Path berisi spasi harus di-quote agar file ter-highlight
+            subprocess.Popen(f'explorer /select,"{target}"', shell=True)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", target])
+        else:
+            folder = target if os.path.isdir(target) else os.path.dirname(target)
+            subprocess.Popen(["xdg-open", folder])
+        return {"status": "success"}
+    except Exception as e:
+        print("reveal-in-explorer error:", e)
+        return JSONResponse(status_code=500, content={"message": "Gagal membuka folder"})
+
 
 # Lazy-import tab_generator: basic_pitch can crash startup if no ML backend is detected.
 tab_status = {}
@@ -1434,10 +1747,20 @@ yt2mp3_status = {}
 
 class Yt2Mp3Request(BaseModel):
     url: str
+    media_type: str = "mp3"  # mp3 | mp4
 
-def run_yt2mp3_download(url: str, job_id: str):
-    yt2mp3_status[job_id] = {"status": "downloading", "progress": 5, "title": "", "filename": ""}
-    
+
+def run_yt2mp3_download(url: str, job_id: str, media_type: str = "mp3"):
+    want_video = (media_type or "mp3").lower() == "mp4"
+    ext = "mp4" if want_video else "mp3"
+    yt2mp3_status[job_id] = {
+        "status": "downloading",
+        "progress": 5,
+        "title": "",
+        "filename": "",
+        "media_type": ext,
+    }
+
     def hook(d):
         if d['status'] == 'downloading':
             try:
@@ -1453,23 +1776,36 @@ def run_yt2mp3_download(url: str, job_id: str):
                 pass
         elif d['status'] == 'finished':
             yt2mp3_status[job_id]["progress"] = 90
-            
-    ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
-        'outtmpl': os.path.join(YT2MP3_DIR, f"{job_id}.%(ext)s"),
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'progress_hooks': [hook],
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['android_vr', 'android', 'ios']}},
-        'concurrent_fragment_downloads': 4,
-        **_ydl_ffmpeg_opts(),
-    }
-    
+
+    if want_video:
+        ydl_opts = {
+            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/best',
+            'merge_output_format': 'mp4',
+            'outtmpl': os.path.join(YT2MP3_DIR, f"{job_id}.%(ext)s"),
+            'progress_hooks': [hook],
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['android_vr', 'android', 'ios']}},
+            'concurrent_fragment_downloads': 4,
+            **_ydl_ffmpeg_opts(),
+        }
+    else:
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'outtmpl': os.path.join(YT2MP3_DIR, f"{job_id}.%(ext)s"),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'progress_hooks': [hook],
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['android_vr', 'android', 'ios']}},
+            'concurrent_fragment_downloads': 4,
+            **_ydl_ffmpeg_opts(),
+        }
+
     if not _resolve_ffmpeg_dir():
         yt2mp3_status[job_id]["status"] = "error"
         yt2mp3_status[job_id]["error"] = (
@@ -1482,22 +1818,41 @@ def run_yt2mp3_download(url: str, job_id: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             if url.startswith("smartsearch:"):
                 query = url.replace("smartsearch:", "", 1)
-                try:
-                    # Coba SoundCloud dulu (sangat cepat, minim throttle)
-                    info = ydl.extract_info(f"scsearch1:{query}", download=True)
-                except Exception:
-                    # Fallback ke YouTube jika tidak ditemukan di SoundCloud
+                if want_video:
+                    # Video klip: YouTube only (SoundCloud = audio)
                     info = ydl.extract_info(f"ytsearch1:{query}", download=True)
+                else:
+                    try:
+                        # Coba SoundCloud dulu (sangat cepat, minim throttle)
+                        info = ydl.extract_info(f"scsearch1:{query}", download=True)
+                    except Exception:
+                        # Fallback ke YouTube jika tidak ditemukan di SoundCloud
+                        info = ydl.extract_info(f"ytsearch1:{query}", download=True)
             else:
                 info = ydl.extract_info(url, download=True)
-            
+
             if 'entries' in info and len(info['entries']) > 0:
                 title = info['entries'][0].get('title', 'Unknown')
             else:
                 title = info.get('title', 'Unknown')
-                
+
+            # Pastikan file akhir ada (yt-dlp kadang pakai ekstensi lain sebelum merge)
+            final_path = os.path.join(YT2MP3_DIR, f"{job_id}.{ext}")
+            if not os.path.exists(final_path):
+                for candidate_ext in (['mp4', 'webm', 'mkv'] if want_video else ['mp3', 'm4a', 'webm', 'opus']):
+                    cand = os.path.join(YT2MP3_DIR, f"{job_id}.{candidate_ext}")
+                    if os.path.exists(cand):
+                        if candidate_ext != ext:
+                            try:
+                                os.replace(cand, final_path)
+                            except Exception:
+                                final_path = cand
+                                ext = candidate_ext
+                        break
+
             yt2mp3_status[job_id]["title"] = title
-            yt2mp3_status[job_id]["filename"] = f"{job_id}.mp3"
+            yt2mp3_status[job_id]["filename"] = f"{job_id}.{ext}"
+            yt2mp3_status[job_id]["media_type"] = ext
             yt2mp3_status[job_id]["status"] = "done"
             yt2mp3_status[job_id]["progress"] = 100
     except Exception as e:
@@ -1505,13 +1860,14 @@ def run_yt2mp3_download(url: str, job_id: str):
         error_msg = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', str(e))
         print(f"YT2MP3 Error: {error_msg}")
         yt2mp3_status[job_id]["status"] = "error"
+        kind = "video" if want_video else "audio"
         if 'ffmpeg' in error_msg.lower() or 'ffprobe' in error_msg.lower():
             yt2mp3_status[job_id]["error"] = (
-                "Gagal mengunduh audio: FFmpeg tidak terdeteksi. "
+                f"Gagal mengunduh {kind}: FFmpeg tidak terdeteksi. "
                 "Pastikan folder portable lengkap (ffmpeg.exe di _internal)."
             )
         else:
-            yt2mp3_status[job_id]["error"] = f"Gagal mengunduh audio: {error_msg}"
+            yt2mp3_status[job_id]["error"] = f"Gagal mengunduh {kind}: {error_msg}"
 
 from tab_scraper import search_tab_data
 
@@ -1534,18 +1890,21 @@ async def search_tab_online(request: TabSearchRequest):
 
 class SearchRequest(BaseModel):
     query: str
+    media_type: str = "mp3"  # mp3 | mp4
+
 
 @app.post("/youtube-to-mp3/search")
 async def yt2mp3_search(req: SearchRequest, current_user: dict = Depends(get_current_user)):
     query = req.query.strip()
+    want_video = (req.media_type or "mp3").lower() == "mp4"
     results = []
-    
+
     ydl_opts = {
         'quiet': True,
         'extract_flat': True,
         'no_warnings': True,
     }
-    
+
     if query.startswith("http"):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1561,28 +1920,29 @@ async def yt2mp3_search(req: SearchRequest, current_user: dict = Depends(get_cur
     else:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Get from SoundCloud
+                # Audio: SoundCloud + YouTube. Video klip: YouTube only.
+                if not want_video:
+                    try:
+                        sc_info = ydl.extract_info(f"scsearch3:{query}", download=False)
+                        if 'entries' in sc_info:
+                            for entry in sc_info['entries']:
+                                results.append({
+                                    "title": entry.get("title", "Unknown"),
+                                    "url": entry.get("url"),
+                                    "duration": entry.get("duration"),
+                                    "source": "SoundCloud"
+                                })
+                    except Exception:
+                        pass
+
                 try:
-                    sc_info = ydl.extract_info(f"scsearch3:{query}", download=False)
-                    if 'entries' in sc_info:
-                        for entry in sc_info['entries']:
-                            results.append({
-                                "title": entry.get("title", "Unknown"),
-                                "url": entry.get("url"),
-                                "duration": entry.get("duration"),
-                                "source": "SoundCloud"
-                            })
-                except Exception:
-                    pass
-                
-                # Get from YouTube
-                try:
-                    yt_info = ydl.extract_info(f"ytsearch3:{query}", download=False)
+                    yt_query = query if not want_video else f"{query} official music video"
+                    yt_info = ydl.extract_info(f"ytsearch5:{yt_query}" if want_video else f"ytsearch3:{query}", download=False)
                     if 'entries' in yt_info:
                         for entry in yt_info['entries']:
                             results.append({
                                 "title": entry.get("title", "Unknown"),
-                                "url": entry.get("url"),
+                                "url": entry.get("url") or f"https://www.youtube.com/watch?v={entry.get('id')}",
                                 "duration": entry.get("duration"),
                                 "source": "YouTube"
                             })
@@ -1590,36 +1950,51 @@ async def yt2mp3_search(req: SearchRequest, current_user: dict = Depends(get_cur
                     pass
         except Exception:
             pass
-            
+
     return {"results": results}
+
 
 @app.post("/youtube-to-mp3/prepare")
 async def yt2mp3_prepare(req: Yt2Mp3Request, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     job_id = str(uuid.uuid4())
     url = req.url.strip()
+    media_type = "mp4" if (req.media_type or "mp3").lower() == "mp4" else "mp3"
     if not url.startswith("http"):
         url = f"smartsearch:{url}"
-    background_tasks.add_task(run_yt2mp3_download, url, job_id)
-    return {"job_id": job_id}
+    background_tasks.add_task(run_yt2mp3_download, url, job_id, media_type)
+    return {"job_id": job_id, "media_type": media_type}
+
 
 @app.get("/youtube-to-mp3/status/{job_id}")
 async def yt2mp3_get_status(job_id: str):
     return yt2mp3_status.get(job_id, {"status": "unknown"})
+
 
 @app.get("/youtube-to-mp3/download/{job_id}")
 async def yt2mp3_download(job_id: str):
     info = yt2mp3_status.get(job_id)
     if not info or info["status"] != "done":
         return JSONResponse(status_code=404, content={"message": "Not ready"})
-    
-    filepath = os.path.join(YT2MP3_DIR, f"{job_id}.mp3")
+
+    filename = info.get("filename") or f"{job_id}.mp3"
+    filepath = os.path.join(YT2MP3_DIR, filename)
+    if not os.path.exists(filepath):
+        # fallback lama
+        for ext in ("mp3", "mp4", "webm", "mkv", "m4a"):
+            cand = os.path.join(YT2MP3_DIR, f"{job_id}.{ext}")
+            if os.path.exists(cand):
+                filepath = cand
+                filename = f"{job_id}.{ext}"
+                break
     if not os.path.exists(filepath):
         return JSONResponse(status_code=404, content={"message": "File not found on disk"})
-    
-    safe_title = "".join(c for c in info.get("title", "audio") if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    download_name = f"{safe_title}.mp3"
-    
-    return FileResponse(filepath, media_type="audio/mpeg", filename=download_name)
+
+    ext = os.path.splitext(filepath)[1].lstrip(".").lower() or "mp3"
+    media_type = "video/mp4" if ext in ("mp4", "webm", "mkv") else "audio/mpeg"
+    safe_title = "".join(c for c in info.get("title", "media") if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    download_name = f"{safe_title}.{ext}"
+
+    return FileResponse(filepath, media_type=media_type, filename=download_name)
 
 # ============================================
 # FRONTEND & SPA CATCH-ALL
@@ -1660,23 +2035,59 @@ if os.path.exists(FRONTEND_DIR):
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
 APP_HOST = "127.0.0.1"
-APP_PORT = 8000
+PREFERRED_PORT = 8000
+PORT_CANDIDATES = list(range(PREFERRED_PORT, PREFERRED_PORT + 11))  # 8000..8010
+APP_PORT = PREFERRED_PORT
 APP_URL = f"http://{APP_HOST}:{APP_PORT}"
 
 
-def _server_is_running() -> bool:
+def _set_app_port(port: int) -> None:
+    global APP_PORT, APP_URL
+    APP_PORT = int(port)
+    APP_URL = f"http://{APP_HOST}:{APP_PORT}"
+
+
+def _jagataudio_url(port: int) -> str:
+    return f"http://{APP_HOST}:{port}"
+
+
+def _server_is_running_on(port: int) -> bool:
     import urllib.request
     try:
-        with urllib.request.urlopen(f"{APP_URL}/license/status", timeout=2) as resp:
+        with urllib.request.urlopen(f"{_jagataudio_url(port)}/license/status", timeout=1.2) as resp:
             return resp.status == 200
     except Exception:
         return False
 
 
+def _server_is_running() -> bool:
+    return _server_is_running_on(APP_PORT)
+
+
+def _find_running_jagataudio_port() -> int | None:
+    for port in PORT_CANDIDATES:
+        if _server_is_running_on(port):
+            return port
+    return None
+
+
 def _port_is_listening(port: int) -> bool:
+    """True if port cannot be bound (already in use)."""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        return sock.connect_ex((APP_HOST, port)) == 0
+        # Do not set SO_REUSEADDR — on Windows it can make a busy port look free.
+        try:
+            sock.bind((APP_HOST, port))
+            return False
+        except OSError:
+            return True
+
+
+def _find_free_port() -> int | None:
+    for port in PORT_CANDIDATES:
+        if not _port_is_listening(port):
+            return port
+    return None
 
 
 def _win_creationflags():
@@ -1725,27 +2136,36 @@ def _show_windows_message(title: str, message: str) -> None:
         pass
 
 
-def _prepare_bundled_startup() -> str:
+def _prepare_bundled_startup() -> tuple[str, int | None]:
     """
     Returns:
-      'focus'  - server already running, caller should open browser and exit
-      'start'  - safe to start uvicorn
-      'blocked' - port still busy after cleanup
+      ('focus', port)   - JagatAudio already running
+      ('start', port)   - bind uvicorn on free port
+      ('blocked', None) - no free port in range
     """
+    running = _find_running_jagataudio_port()
+    if running is not None:
+        _set_app_port(running)
+        return "focus", running
+
+    free = _find_free_port()
+    if free is not None:
+        _set_app_port(free)
+        return "start", free
+
+    # Last resort: try reclaim preferred port if something else holds all candidates
+    _kill_processes_on_port(PREFERRED_PORT)
     import time
+    time.sleep(0.6)
+    running = _find_running_jagataudio_port()
+    if running is not None:
+        _set_app_port(running)
+        return "focus", running
+    if not _port_is_listening(PREFERRED_PORT):
+        _set_app_port(PREFERRED_PORT)
+        return "start", PREFERRED_PORT
 
-    if _server_is_running():
-        return "focus"
-
-    if _port_is_listening(APP_PORT):
-        _kill_processes_on_port(APP_PORT)
-        time.sleep(0.6)
-        if _server_is_running():
-            return "focus"
-
-    if _port_is_listening(APP_PORT) and not _server_is_running():
-        return "blocked"
-    return "start"
+    return "blocked", None
 
 
 if __name__ == "__main__":
@@ -1767,7 +2187,7 @@ if __name__ == "__main__":
             sys.stdout = DummyStream()
             sys.stderr = DummyStream()
 
-        startup_mode = _prepare_bundled_startup()
+        startup_mode, chosen_port = _prepare_bundled_startup()
         if startup_mode == "focus":
             if splash_proc:
                 try:
@@ -1782,8 +2202,8 @@ if __name__ == "__main__":
                 except: pass
             _show_windows_message(
                 "Jagat Audio",
-                "Port 8000 masih dipakai aplikasi lain.\n"
-                "Tutup aplikasi tersebut lalu coba buka Jagat Audio lagi.",
+                "Semua port 8000–8010 sedang dipakai aplikasi lain.\n"
+                "Tutup salah satu aplikasi tersebut, lalu buka Jagat Audio lagi.",
             )
             sys.exit(1)
             
@@ -1798,4 +2218,8 @@ if __name__ == "__main__":
         threading.Thread(target=open_browser, daemon=True).start()
         uvicorn.run(app, host=APP_HOST, port=APP_PORT, log_config=None)
     else:
-        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        # Dev mode: prefer 8000, auto-fallback if busy
+        free = _find_free_port() or PREFERRED_PORT
+        _set_app_port(free)
+        print(f"[JagatAudio] API listening on {APP_URL}")
+        uvicorn.run("main:app", host=APP_HOST, port=APP_PORT, reload=True)

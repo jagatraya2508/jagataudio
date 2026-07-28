@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "ED82-980E-E249-5AD6-2596-E047-01AE-8798",
+    "license_type": "1m",
+    "customer_name": "Siapa Kami",
+    "issued_date": "2026-07-23T14:07:26.459362",
+    "expiry_date": "2026-08-22T14:07:26.459362",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "WE62fk6eJvNf/x0h1dyXqV86IBzozKYT5SOqDIEkxATe4it/6b6uJKx38+Fn+FcfO7CBpQyAawELbbsALU18Tglk/lyZBv+MvT6ayyPy/WVeDRyH00ja2coAo1CHXvq0GBfp5VPUuGM5+HzaKV72rA5Ndn2Wu49azoq8PGdc07fuVBl6UflWTa61kDHSO0XXdj6unuuh5q7PZSOa7AITzQ+27CHqgrJMVLOpoGnUQ6hQBRiQOlU7x5iAbPjAsvfbktZomhVITyXFmAu2h/rpF7llzrT+M77obaJ3KMcrrPMcti2IIgYTo0whJEiREiLLXoU+SqrdioxdnuPSh0SSDQ=="
+}

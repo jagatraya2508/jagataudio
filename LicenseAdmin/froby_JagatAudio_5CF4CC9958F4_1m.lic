@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "5CF4-CC99-58F4-855A-246A-FF40-EB7E-3305",
+    "license_type": "1m",
+    "customer_name": "froby",
+    "issued_date": "2026-07-27T12:24:26.353061",
+    "expiry_date": "2026-08-26T12:24:26.353061",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "gqlr3tYyZ/vrQjUqkfxBEAhq81qkr1a6CaTc9/FGEosODcEENTf7TraB383SNsYRyJdlnmIATD5AI6m7kKZTn879hcpl3HVSpZil7cTcMxmRd7yasi0rdkOnE5xusqd943gdRloKwv+MgK3Ge0zSq7FxYaLn8IieK7TXXwb+RWL8rXxvpymELWXCZdHQtflp+qByju4WPpzsMwdBkUfmDyNV6ED+s7bRSYHeMAJy2pjGUxeDfFzxU9Bhl0yf/nJxIgsd9czj4khotGssW4ekrHpIUtsaR5AMmS6MEY7pd6S7BSV0RW+/hH2T+dGueBpBY5HTNevdXRhsKp3+zBo+hA=="
+}
