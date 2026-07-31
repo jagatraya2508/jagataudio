@@ -1996,6 +1996,379 @@ async def yt2mp3_download(job_id: str):
 
     return FileResponse(filepath, media_type=media_type, filename=download_name)
 
+# --- Style Project Metadata Helpers ---
+
+STYLE_PROJECT_SUFFIX = "_style_project.json"
+
+
+def _style_project_meta_path(job_id: str) -> str:
+    return os.path.join(UPLOAD_DIR, f"{job_id}{STYLE_PROJECT_SUFFIX}")
+
+
+def _read_style_project_meta(job_id: str) -> Optional[dict]:
+    path = _style_project_meta_path(job_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_style_project_meta(job_id: str, data: dict) -> None:
+    path = _style_project_meta_path(job_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _style_output_ready(job_id: str) -> bool:
+    return os.path.exists(os.path.join(UPLOAD_DIR, f"{job_id}_out.mp3"))
+
+
+def _list_style_projects() -> list:
+    projects = []
+    for fname in os.listdir(UPLOAD_DIR):
+        if not fname.endswith(STYLE_PROJECT_SUFFIX):
+            continue
+        job_id = fname[: -len(STYLE_PROJECT_SUFFIX)]
+        if not _style_output_ready(job_id):
+            continue
+        meta = _read_style_project_meta(job_id)
+        if not meta:
+            continue
+        meta["job_id"] = job_id
+        meta["result_url"] = f"/api/convert-style/download/{job_id}?filename={meta.get('filename', 'output.mp3')}"
+        projects.append(meta)
+    projects.sort(
+        key=lambda p: p.get("created_at") or "",
+        reverse=True,
+    )
+    return projects
+
+
+# --- Style Mashup Endpoints ---
+
+@app.post("/api/convert-style")
+async def convert_music_style(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    style: str = Form(...),
+    user: dict = Depends(get_current_user)
+):
+    import uuid
+    import shutil
+    import json
+    
+    if style not in ["dj", "rock"]:
+        return JSONResponse(status_code=400, content={"message": "Style tidak valid"})
+        
+    job_id = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1] or ".mp3"
+    input_path = os.path.join(UPLOAD_DIR, f"{job_id}_in{ext}")
+    
+    with open(input_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    status_file = os.path.join(UPLOAD_DIR, f"{job_id}_style.json")
+    with open(status_file, "w") as f:
+        json.dump({"status": "processing", "message": "Memulai...", "result_url": None, "filename": file.filename}, f)
+        
+    background_tasks.add_task(process_style_mashup, job_id, input_path, style, file.filename)
+    return {"job_id": job_id, "status": "processing"}
+
+@app.get("/api/convert-style/status/{job_id}")
+async def convert_music_style_status(job_id: str):
+    import json
+    status_file = os.path.join(UPLOAD_DIR, f"{job_id}_style.json")
+    if not os.path.exists(status_file):
+        return JSONResponse(status_code=404, content={"message": "Job tidak ditemukan"})
+    with open(status_file, "r") as f:
+        return json.load(f)
+
+@app.get("/api/convert-style/download/{job_id}")
+async def convert_music_style_download(job_id: str, filename: str = "output.mp3"):
+    output_path = os.path.join(UPLOAD_DIR, f"{job_id}_out.mp3")
+    if not os.path.exists(output_path):
+        return JSONResponse(status_code=404, content={"message": "File tidak ditemukan"})
+    return FileResponse(output_path, media_type="audio/mpeg", filename=filename)
+
+def process_style_mashup(job_id: str, input_path: str, style: str, original_filename: str):
+    import subprocess
+    import shutil
+    import librosa
+    import os
+    import json
+    import numpy as np
+    
+    status_file = os.path.join(UPLOAD_DIR, f"{job_id}_style.json")
+    def update_status(status, msg, result=None):
+        with open(status_file, "w") as f:
+            json.dump({"status": status, "message": msg, "result_url": result, "filename": f"JagatAudio_{style}_{original_filename}"}, f)
+            
+    try:
+        update_status("processing", "Memisahkan vokal dengan AI (1-3 menit)...")
+        demucs_out = os.path.join(UPLOAD_DIR, "mashup_demucs")
+        
+        import sys as _sys
+        command = [_sys.executable]
+        if not getattr(_sys, 'frozen', False):
+            command.append(os.path.abspath(__file__))
+        command.extend([
+            "-m", "demucs",
+            "--two-stems=vocals",
+            "-n", "htdemucs_6s",
+            "--mp3",
+            "--mp3-preset", "2",
+            "-o", os.path.abspath(demucs_out),
+            os.path.abspath(input_path)
+        ])
+        kwargs = {}
+        if _sys.platform == "win32":
+            kwargs["creationflags"] = 0x08000000
+        demucs_log = os.path.join(UPLOAD_DIR, f"{job_id}_demucs.log")
+        with open(demucs_log, "w") as log_f:
+            result = subprocess.run(command, stdout=log_f, stderr=subprocess.STDOUT, **kwargs)
+        if result.returncode != 0:
+            err_detail = ""
+            try:
+                with open(demucs_log, "r") as log_f:
+                    err_detail = log_f.read()[-500:]
+            except: pass
+            raise Exception(f"Demucs gagal (exit code {result.returncode}): {err_detail}")
+        
+        input_basename = os.path.splitext(os.path.basename(input_path))[0]
+        vocals_path = os.path.join(demucs_out, "htdemucs_6s", input_basename, "vocals.mp3")
+        # no_vocals = instrumen asli (gitar, bass, drum, piano, dll)
+        no_vocals_path = os.path.join(demucs_out, "htdemucs_6s", input_basename, "no_vocals.mp3")
+        
+        if not os.path.exists(vocals_path):
+            raise Exception("Gagal memisahkan vokal. Pastikan lagu mengandung vokal.")
+            
+        update_status("processing", "Menganalisis tempo lagu...")
+        # Analisis BPM dari lagu utuh (no_vocals lebih akurat untuk beat detection)
+        bpm_source = no_vocals_path if os.path.exists(no_vocals_path) else vocals_path
+        y, sr = librosa.load(bpm_source, sr=None)
+        bpm, _ = librosa.beat.beat_track(y=y, sr=sr)
+        bpm = float(bpm) if np.isscalar(bpm) else float(bpm[0])
+        if bpm < 60: bpm *= 2
+        if bpm > 180: bpm /= 2
+        
+        asset_dir = os.path.join(os.path.dirname(__file__), "assets")
+        if style == "dj":
+            beat_path = os.path.join(asset_dir, "dj_beat.wav")
+            beat_bpm = 128.0
+        else:
+            beat_path = os.path.join(asset_dir, "rock_beat.wav")
+            beat_bpm = 120.0
+            
+        update_status("processing", f"Mixing 3 track (Vokal + Musik Asli + Beat {style.upper()}, {bpm:.0f} BPM)...")
+        speed_ratio = bpm / beat_bpm
+        if speed_ratio < 0.5: speed_ratio = 0.5
+        if speed_ratio > 2.0: speed_ratio = 2.0
+        
+        output_path = os.path.join(UPLOAD_DIR, f"{job_id}_out.mp3")
+        
+        if style == "dj":
+            # DJ: Vokal(1.0) + Musik asli dengan bass boost(0.6) + Beat DJ(0.5)
+            cmd_mix = [
+                "ffmpeg", "-y",
+                "-i", vocals_path,
+                "-i", no_vocals_path,
+                "-stream_loop", "-1", "-i", beat_path,
+                "-filter_complex",
+                (
+                    f"[0:a]volume=1.2[voc];"
+                    f"[1:a]bass=g=8:f=110,volume=0.6[mus];"
+                    f"[2:a]atempo={speed_ratio},volume=0.5[beat];"
+                    f"[voc][mus][beat]amix=inputs=3:duration=first:dropout_transition=2,loudnorm=I=-14:TP=-1.5"
+                ),
+                "-ac", "2",
+                output_path
+            ]
+        else:
+            # Rock: Vokal(1.0) + Musik asli dengan distorsi(0.5) + Gitar rock(0.45)
+            cmd_mix = [
+                "ffmpeg", "-y",
+                "-i", vocals_path,
+                "-i", no_vocals_path,
+                "-stream_loop", "-1", "-i", beat_path,
+                "-filter_complex",
+                (
+                    f"[0:a]volume=1.2[voc];"
+                    f"[1:a]aeval='clipd(val(0)*3,0.8)':c=same,bass=g=6:f=100,treble=g=4:f=3000,volume=0.5[mus];"
+                    f"[2:a]atempo={speed_ratio},volume=0.45[beat];"
+                    f"[voc][mus][beat]amix=inputs=3:duration=first:dropout_transition=2,loudnorm=I=-14:TP=-1.5"
+                ),
+                "-ac", "2",
+                output_path
+            ]
+        
+        mix_result = subprocess.run(cmd_mix, capture_output=True, text=True)
+        if mix_result.returncode != 0:
+            raise Exception(f"FFmpeg mix gagal: {mix_result.stderr[-300:]}")
+        
+        result_url = f"/api/convert-style/download/{job_id}?filename=JagatAudio_{style}_{original_filename}"
+        update_status("completed", "Selesai!", result=result_url)
+        
+        # Auto-save style project metadata
+        _write_style_project_meta(job_id, {
+            "job_id": job_id,
+            "original_name": original_filename,
+            "display_name": os.path.splitext(original_filename)[0],
+            "style": style,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "filename": f"JagatAudio_{style}_{original_filename}",
+        })
+        
+    except Exception as e:
+        print("Mashup Error:", str(e))
+        update_status("error", f"Terjadi kesalahan: {str(e)}")
+
+# --- Style Project CRUD Endpoints ---
+
+@app.get("/api/style-projects")
+async def list_style_projects(current_user: dict = Depends(get_current_user)):
+    return {"projects": _list_style_projects()}
+
+
+@app.patch("/api/style-projects/{job_id}/name")
+async def rename_style_project(
+    job_id: str,
+    body: ProjectRename,
+    current_user: dict = Depends(get_current_user),
+):
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Nama proyek tidak boleh kosong")
+    meta = _read_style_project_meta(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Proyek style tidak ditemukan")
+    meta["display_name"] = display_name[:120]
+    _write_style_project_meta(job_id, meta)
+    return {"status": "saved", "display_name": meta["display_name"]}
+
+
+@app.delete("/api/style-projects/{job_id}")
+async def delete_style_project(job_id: str, current_user: dict = Depends(get_current_user)):
+    meta = _read_style_project_meta(job_id)
+    if not meta and not _style_output_ready(job_id):
+        raise HTTPException(status_code=404, detail="Proyek style tidak ditemukan")
+    # Remove all files related to this style job
+    for fname in os.listdir(UPLOAD_DIR):
+        if fname.startswith(job_id):
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, fname))
+            except OSError:
+                pass
+    return {"status": "deleted"}
+
+
+# ============================================
+# GEAR DETECTOR ROUTE
+# ============================================
+from gear_detector import get_gear_for_song
+import uuid
+
+GEAR_PROJECT_SUFFIX = "_gear.json"
+
+def _gear_project_meta_path(job_id: str) -> str:
+    return os.path.join(UPLOAD_DIR, f"{job_id}{GEAR_PROJECT_SUFFIX}")
+
+def _read_gear_project_meta(job_id: str) -> Optional[dict]:
+    path = _gear_project_meta_path(job_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _write_gear_project_meta(job_id: str, data: dict) -> None:
+    path = _gear_project_meta_path(job_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _list_gear_projects() -> list:
+    projects = []
+    for fname in os.listdir(UPLOAD_DIR):
+        if not fname.endswith(GEAR_PROJECT_SUFFIX):
+            continue
+        job_id = fname[: -len(GEAR_PROJECT_SUFFIX)]
+        meta = _read_gear_project_meta(job_id)
+        if not meta:
+            continue
+        meta["job_id"] = job_id
+        projects.append(meta)
+    projects.sort(
+        key=lambda p: p.get("created_at") or "",
+        reverse=True,
+    )
+    return projects
+
+@app.get("/api/gear-projects")
+async def list_gear_projects(current_user: dict = Depends(get_current_user)):
+    return {"projects": _list_gear_projects()}
+
+@app.patch("/api/gear-projects/{job_id}/name")
+async def rename_gear_project(
+    job_id: str,
+    body: ProjectRename,
+    current_user: dict = Depends(get_current_user),
+):
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Nama proyek tidak boleh kosong")
+    meta = _read_gear_project_meta(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Proyek gear tidak ditemukan")
+    meta["display_name"] = display_name[:120]
+    _write_gear_project_meta(job_id, meta)
+    return {"status": "saved", "display_name": meta["display_name"]}
+
+@app.delete("/api/gear-projects/{job_id}")
+async def delete_gear_project(job_id: str, current_user: dict = Depends(get_current_user)):
+    meta = _read_gear_project_meta(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Proyek gear tidak ditemukan")
+    # Remove the gear job meta file
+    path = _gear_project_meta_path(job_id)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return {"status": "deleted"}
+
+import uuid
+
+@app.post("/api/detect-gear")
+async def detect_gear(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    artist_title: str = Form(""),
+    user: dict = Depends(get_current_user)
+):
+    # For a real implementation, we would save the file and analyze it using librosa in the background.
+    # For this mock, we just use the get_gear_for_song function directly.
+    import time
+    from datetime import datetime, timezone
+    job_id = str(uuid.uuid4())
+    
+    query = artist_title.strip()
+    if not query:
+        query = file.filename
+        
+    result = get_gear_for_song(query)
+    
+    # Save gear project metadata
+    _write_gear_project_meta(job_id, {
+        "job_id": job_id,
+        "original_name": file.filename,
+        "display_name": os.path.splitext(file.filename)[0] if file else query,
+        "query": query,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "result": result
+    })
+    
+    return {"job_id": job_id, "status": "done", "result": result}
+
+
+
 # ============================================
 # FRONTEND & SPA CATCH-ALL
 # ============================================

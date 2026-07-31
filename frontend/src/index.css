@@ -4541,3 +4541,212 @@ input[type=range].original-slider::-webkit-slider-thumb:hover {
     min-height: 220px;
   }
 }
+
+/* ============================================
+   AI Music Style – Sub-tabs & History
+   ============================================ */
+
+.style-home-tabs {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto 1.25rem;
+  padding: 0.35rem;
+  background: rgba(18, 20, 32, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+.style-home-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.style-home-tab.active {
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.55), rgba(168, 85, 247, 0.35));
+  color: #fff;
+  box-shadow: 0 2px 14px rgba(236, 72, 153, 0.35);
+}
+
+.style-home-tab:hover:not(.active) {
+  background: rgba(236, 72, 153, 0.12);
+}
+
+.style-home-tab-badge {
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #ec4899;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Style history card — accent overrides */
+.style-history-card .saved-projects-refresh:hover:not(:disabled) {
+  border-color: #ec4899;
+  color: #ec4899;
+}
+
+.style-history-card .saved-project-open:hover {
+  border-color: #ec4899;
+  background: rgba(236, 72, 153, 0.12);
+}
+
+.style-history-card .saved-project-open svg {
+  color: #ec4899;
+}
+
+.style-history-card .saved-project-edit {
+  background: rgba(236, 72, 153, 0.08);
+  border: 1px solid rgba(236, 72, 153, 0.25);
+  color: #ec4899;
+}
+
+.style-history-card .saved-project-edit:hover {
+  background: rgba(236, 72, 153, 0.18);
+}
+
+/* Style type badges */
+.style-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.style-badge--dj {
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.3), rgba(168, 85, 247, 0.2));
+  color: #f0abfc;
+  border: 1px solid rgba(236, 72, 153, 0.3);
+}
+
+.style-badge--rock {
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.3), rgba(239, 68, 68, 0.2));
+  color: #fdba74;
+  border: 1px solid rgba(251, 146, 60, 0.3);
+}
+
+/* Style Preview Player */
+.style-preview-player {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 15px;
+  margin: 0 auto 20px;
+  max-width: 450px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.style-preview-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.style-preview-player audio {
+  width: 100%;
+  height: 36px;
+  border-radius: 8px;
+  outline: none;
+}
+
+.style-preview-player audio::-webkit-media-controls-panel {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+.style-preview-player audio::-webkit-media-controls-current-time-display,
+.style-preview-player audio::-webkit-media-controls-time-remaining-display {
+  color: #fff;
+}
+
+/* ========================================================= */
+/* GEAR DETECTOR PREMIUM STYLES                              */
+/* ========================================================= */
+.gear-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.gear-item {
+  background: rgba(255,255,255,0.05);
+  padding: 15px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: all 0.3s ease;
+}
+
+.gear-item:hover {
+  background: rgba(255,255,255,0.1);
+  transform: translateY(-2px);
+  border-color: rgba(236, 72, 153, 0.4);
+  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.15);
+}
+
+.gear-label {
+  display: block;
+  font-size: 0.85rem;
+  color: #a0aec0;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gear-value {
+  display: block;
+  font-size: 1.1rem;
+  color: #f7fafc;
+}
+
+.tone-highlight {
+  color: #38b2ac;
+  text-shadow: 0 0 10px rgba(56, 178, 172, 0.4);
+}
+
+.amp-highlight {
+  color: #ed8936;
+}
+
+.pedal-highlight {
+  color: #9f7aea;
+}
+
+.gear-description {
+  font-size: 0.95rem;
+  color: #e2e8f0;
+  border-left: 3px solid #ec4899;
+}

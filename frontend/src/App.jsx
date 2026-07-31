@@ -471,7 +471,62 @@ function EditableValue({
 
 function App() {
   // Tab navigation
-  const [activeTab, setActiveTab] = useState('stems'); // 'stems' | 'yt2mp3' | 'playlist'
+  const [activeTab, setActiveTab] = useState('stems'); // 'stems' | 'yt2mp3' | 'playlist' | 'style'
+  
+  // Gear Detector States
+  const [styleFile, setStyleFile] = useState(null);
+  const [gearArtistInput, setGearArtistInput] = useState('');
+  const [styleLoading, setStyleLoading] = useState(false);
+  const [styleResult, setStyleResult] = useState(null);
+  const [styleError, setStyleError] = useState('');
+  const [styleProgressText, setStyleProgressText] = useState('');
+  const [stylePreviewUrl, setStylePreviewUrl] = useState(null);
+  const [styleProjects, setStyleProjects] = useState([]);
+  const [styleProjectsLoading, setStyleProjectsLoading] = useState(false);
+  const [deletingStyleProjectId, setDeletingStyleProjectId] = useState(null);
+  const [styleHomeMode, setStyleHomeMode] = useState('convert'); // 'convert' | 'history'
+  const [editingStyleProjectId, setEditingStyleProjectId] = useState(null);
+  const [styleProjectNameDraft, setStyleProjectNameDraft] = useState('');
+
+  const fetchStyleProjectsRef = useRef(null);
+
+  const handleStyleConvert = async () => {
+    if (!styleFile) {
+      setStyleError('Pilih file audio terlebih dahulu.');
+      return;
+    }
+    setStyleLoading(true);
+    setStyleError('');
+    setStyleResult(null);
+    setStyleProgressText('Menganalisis profil gelombang suara...');
+
+    const formData = new FormData();
+    formData.append('file', styleFile);
+    formData.append('artist_title', gearArtistInput);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_BASE_URL}/api/detect-gear`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      
+      if (!response.ok) {
+        throw new Error('Gagal menganalisis lagu');
+      }
+
+      const data = await response.json();
+      setStyleResult(data.result);
+      setStyleLoading(false);
+      fetchStyleProjectsRef.current?.();
+
+    } catch (err) {
+      console.error(err);
+      setStyleError(err.message || 'Terjadi kesalahan saat memproses.');
+      setStyleLoading(false);
+    }
+  };
 
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState('idle'); // idle, selected, uploading, processing, ready, error
@@ -590,6 +645,25 @@ function App() {
   const [searchResult, setSearchResult] = useState(null);
   // Auth State
   const [token, setToken] = useState('portable-mode-token');
+
+  const fetchStyleProjects = useCallback(async () => {
+    if (!token) return;
+    setStyleProjectsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/gear-projects`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStyleProjects(data.projects || []);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setStyleProjectsLoading(false);
+    }
+  }, [token]);
+  fetchStyleProjectsRef.current = fetchStyleProjects;
   const [username, setUsername] = useState('admin');
   const [isAdmin, setIsAdmin] = useState(true);
   const [isLoginMode, setIsLoginMode] = useState(true);
@@ -3225,6 +3299,71 @@ function App() {
     }
   }, [token, activeTab, fetchSavedProjects]);
 
+  // --- Style Project Functions ---
+
+  const renameStyleProject = async (jobId, name) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed || !token || !jobId) return false;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/gear-projects/${jobId}/name`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ display_name: trimmed }),
+      });
+      if (!res.ok) throw new Error('Gagal menyimpan nama proyek');
+      setStyleProjects((prev) => prev.map((p) =>
+        p.job_id === jobId ? { ...p, display_name: trimmed } : p
+      ));
+      return true;
+    } catch (e) {
+      console.error(e);
+      alert(e.message || 'Gagal menyimpan nama proyek');
+      return false;
+    }
+  };
+
+  const deleteStyleProject = async (jobId) => {
+    if (!window.confirm('Hapus riwayat analisis gear ini?')) return;
+    setDeletingStyleProjectId(jobId);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/gear-projects/${jobId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Gagal menghapus proyek');
+      setStyleProjects((prev) => prev.filter((p) => p.job_id !== jobId));
+      // If the deleted project is currently being played, clear the result
+      if (styleResult && styleResult.url && styleResult.url.includes(jobId)) {
+        setStyleResult(null);
+      }
+    } catch (e) {
+      alert(e.message || 'Gagal menghapus proyek');
+    } finally {
+      setDeletingStyleProjectId(null);
+    }
+  };
+
+  const openStyleProject = (project) => {
+    if (project.result) {
+      setStyleResult(project.result);
+    } else {
+      setStyleResult({
+        url: `${API_BASE_URL}${project.result_url}`,
+        name: project.filename || project.display_name,
+      });
+    }
+    setStyleHomeMode('convert');
+  };
+
+  useEffect(() => {
+    if (token && activeTab === 'style') {
+      fetchStyleProjects();
+    }
+  }, [token, activeTab, fetchStyleProjects]);
+
   useEffect(() => {
     if (status !== 'ready' || !fileId) return undefined;
     if (skipSettingsSaveRef.current) return undefined;
@@ -4246,6 +4385,12 @@ function App() {
             <Download size={18} /> Web Audio Converter
           </button>
           <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> AI Partitur
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
@@ -4284,6 +4429,12 @@ function App() {
             onClick={() => setActiveTab('yt2mp3')}
           >
             <Download size={18} /> Web Audio Converter
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> Guitar Gear Detector
           </button>
           <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
@@ -4453,6 +4604,12 @@ function App() {
             onClick={() => setActiveTab('yt2mp3')}
           >
             <Download size={18} /> Web Audio Converter
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> Guitar Gear Detector
           </button>
           <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
@@ -6359,6 +6516,247 @@ function App() {
                 <p>{yt2mp3Error}</p>
                 <button className="upload-btn" onClick={() => setYt2mp3Status('idle')}>Coba Lagi</button>
               </div>
+            )}
+          </div>
+        ) : activeTab === 'style' ? (
+          <div className="style-container animate-fade-in">
+            {/* Sub-tabs: Konversi Baru / Riwayat Konversi */}
+            <div className="style-home-tabs">
+              <button
+                type="button"
+                className={`style-home-tab ${styleHomeMode === 'convert' ? 'active' : ''}`}
+                onClick={() => setStyleHomeMode('convert')}
+              >
+                <Sparkles size={18} /> Analisis Baru
+              </button>
+              <button
+                type="button"
+                className={`style-home-tab ${styleHomeMode === 'history' ? 'active' : ''}`}
+                onClick={() => setStyleHomeMode('history')}
+              >
+                <Clock size={18} /> Riwayat Analisis
+                {styleProjects.length > 0 && (
+                  <span className="style-home-tab-badge">{styleProjects.length}</span>
+                )}
+              </button>
+            </div>
+
+            {styleHomeMode === 'convert' ? (
+            <div className="yt-input-card glass-panel" style={{ textAlign: 'center' }}>
+              <div className="yt-input-header">
+                <Sparkles size={48} className="yt-icon" style={{ color: '#ec4899' }} />
+                <h3>AI Guitar Gear Detector</h3>
+                <p>Kenali profil tone gitar, tebakan Amplifier, dan Efek/Pedal dari lagu favorit Anda.</p>
+              </div>
+              
+              <div style={{ display: 'flex', gap: '15px', justifyContent: 'center', alignItems: 'center', margin: '20px auto', maxWidth: '650px', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  placeholder="Opsional: Masukkan Nama Artis / Judul Lagu (Membantu akurasi AI)"
+                  value={gearArtistInput}
+                  onChange={(e) => setGearArtistInput(e.target.value)}
+                  style={{ 
+                    flex: '1', 
+                    minWidth: '300px', 
+                    padding: '12px 20px', 
+                    borderRadius: '8px', 
+                    border: '1px solid rgba(255,255,255,0.2)', 
+                    background: 'rgba(0,0,0,0.3)', 
+                    color: 'white',
+                    fontSize: '0.95rem'
+                  }}
+                />
+                
+                <input
+                  type="file"
+                  accept="audio/*"
+                  id="style-upload"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files[0];
+                    setStyleFile(f);
+                    if (stylePreviewUrl) URL.revokeObjectURL(stylePreviewUrl);
+                    setStylePreviewUrl(f ? URL.createObjectURL(f) : null);
+                  }}
+                />
+                <label htmlFor="style-upload" className="upload-btn" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', whiteSpace: 'nowrap', fontWeight: '500' }}>
+                  <Upload size={18} />
+                  {styleFile ? styleFile.name : 'Pilih File Audio'}
+                </label>
+              </div>
+
+              {stylePreviewUrl && (
+                <div className="style-preview-player">
+                  <div className="style-preview-label"><Play size={14} /> Preview Lagu Asli</div>
+                  <audio controls src={stylePreviewUrl} style={{ width: '100%', maxWidth: '400px' }}></audio>
+                </div>
+              )}
+
+              <button
+                className="process-btn"
+                onClick={handleStyleConvert}
+                disabled={!styleFile || styleLoading}
+                style={{ width: '100%', maxWidth: '300px', margin: '0 auto', display: 'block' }}
+              >
+                {styleLoading ? <Loader2 size={18} className="spinner" /> : <Sparkles size={18} />}
+                {styleLoading ? (styleProgressText || 'Memproses...') : 'Mulai Analisis Tone'}
+              </button>
+
+              {styleError && <div className="error-message" style={{ marginTop: '15px' }}>{styleError}</div>}
+
+              {styleResult && (
+                <div className="gear-result-card glass-panel" style={{ marginTop: '30px', padding: '20px', textAlign: 'left' }}>
+                  <h4 style={{ color: '#fff', marginBottom: '15px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '10px' }}>
+                    <Sparkles size={20} style={{verticalAlign:'middle', marginRight:'8px', color:'#ec4899'}} />
+                    Hasil Deteksi Gear
+                  </h4>
+                  <div style={{ background: 'rgba(236,72,153,0.15)', color: '#ec4899', padding: '5px 10px', borderRadius: '6px', display: 'inline-block', marginBottom: '15px', fontWeight: 'bold' }}>
+                    Akurasi / Confidence: {styleResult.confidence}%
+                  </div>
+                  
+                  <div className="gear-info-grid">
+                    <div className="gear-item">
+                      <span className="gear-label">Tipe Tone:</span>
+                      <strong className="gear-value tone-highlight">{styleResult.tone}</strong>
+                    </div>
+                    
+                    <div className="gear-item">
+                      <span className="gear-label">Detail Gitar:</span>
+                      <strong className="gear-value">{styleResult.guitar?.model || styleResult.guitar}</strong>
+                      {styleResult.guitar?.pickups && <div style={{ fontSize: '0.85rem', color: '#cbd5e0', marginTop: '5px' }}>Pickups: {styleResult.guitar.pickups}</div>}
+                      {styleResult.guitar?.strings && <div style={{ fontSize: '0.85rem', color: '#cbd5e0' }}>Strings: {styleResult.guitar.strings}</div>}
+                    </div>
+                    
+                    <div className="gear-item">
+                      <span className="gear-label">Amplifier (Amp):</span>
+                      <strong className="gear-value amp-highlight">{styleResult.amp?.head || styleResult.amp}</strong>
+                      {styleResult.amp?.cabinet && <div style={{ fontSize: '0.85rem', color: '#cbd5e0', marginTop: '5px' }}>Cab: {styleResult.amp.cabinet}</div>}
+                      {styleResult.amp?.settings && <div style={{ fontSize: '0.85rem', color: '#cbd5e0' }}>Set: {styleResult.amp.settings}</div>}
+                    </div>
+                    
+                    <div className="gear-item">
+                      <span className="gear-label">Efek & Pedal:</span>
+                      {typeof styleResult.pedal === 'object' && styleResult.pedal !== null ? (
+                        <ul style={{ margin: '5px 0 0 15px', padding: 0, fontSize: '0.9rem', color: '#cbd5e0' }}>
+                          {Object.entries(styleResult.pedal).map(([key, val]) => (
+                            <li key={key} style={{marginBottom:'3px'}}><strong style={{textTransform:'capitalize'}}>{key}:</strong> <span className="pedal-highlight">{val}</span></li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <strong className="gear-value pedal-highlight">{styleResult.pedal}</strong>
+                      )}
+                    </div>
+                  </div>
+                  <div className="gear-description" style={{ marginTop: '20px', padding: '15px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', lineHeight: '1.6' }}>
+                    <p>{styleResult.description}</p>
+                    {styleResult.alternative && (
+                      <div style={{ marginTop: '15px', paddingTop: '15px', borderTop: '1px dashed rgba(255,255,255,0.2)' }}>
+                        <h4 style={{ color: '#ff477e', marginBottom: '8px', fontSize: '0.95rem' }}>Alternatif Gear Lain:</h4>
+                        <p style={{ fontSize: '0.9rem', color: '#ccc' }}>{styleResult.alternative}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            ) : (
+            /* Riwayat Konversi */
+            <div className="saved-projects-card glass-panel style-history-card">
+              <div className="saved-projects-header">
+                <div>
+                  <h3><Clock size={22} style={{ verticalAlign: 'middle', marginRight: '8px' }} />Riwayat Analisis Gear</h3>
+                  <p>Daftar lagu yang pernah dianalisis gearnya.</p>
+                </div>
+                <button type="button" className="saved-projects-refresh" onClick={fetchStyleProjects} disabled={styleProjectsLoading} title="Muat ulang daftar">
+                  <RefreshCw size={18} className={styleProjectsLoading ? 'spinner' : ''} />
+                </button>
+              </div>
+
+              {styleProjectsLoading && styleProjects.length === 0 ? (
+                <div className="saved-projects-empty"><Loader2 size={28} className="spinner" /> Memuat riwayat...</div>
+              ) : styleProjects.length === 0 ? (
+                <div className="saved-projects-empty">
+                  Belum ada riwayat analisis gear.
+                  <button type="button" className="upload-projects-btn upload-projects-btn--compact" onClick={() => setStyleHomeMode('convert')}>
+                    <Sparkles size={16} /> Analisis lagu baru
+                  </button>
+                </div>
+              ) : (
+                <ul className="saved-projects-list">
+                  {styleProjects.map((project) => (
+                    <li key={project.job_id} className="saved-project-item">
+                      {editingStyleProjectId === project.job_id ? (
+                        <form
+                          className="saved-project-rename-form"
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            const ok = await renameStyleProject(project.job_id, styleProjectNameDraft);
+                            if (ok) setEditingStyleProjectId(null);
+                          }}
+                        >
+                          <input
+                            type="text"
+                            className="saved-project-rename-input"
+                            value={styleProjectNameDraft}
+                            onChange={(e) => setStyleProjectNameDraft(e.target.value)}
+                            maxLength={120}
+                            autoFocus
+                            placeholder="Nama proyek"
+                          />
+                          <button type="submit" className="saved-project-rename-save" title="Simpan nama">
+                            <CheckCircle size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="saved-project-rename-cancel"
+                            onClick={() => setEditingStyleProjectId(null)}
+                            title="Batal"
+                          >
+                            <X size={16} />
+                          </button>
+                        </form>
+                      ) : (
+                        <>
+                          <button type="button" className="saved-project-open" onClick={() => openStyleProject(project)}>
+                            <Sparkles size={20} />
+                            <div className="saved-project-info">
+                              <strong>{project.display_name || project.job_id}</strong>
+                              <span>
+                                <span className={`style-badge style-badge--${project.style}`}>
+                                  {project.style === 'dj' ? '🎧 DJ' : '🎸 Rock'}
+                                </span>
+                                {' · '}
+                                {formatProjectDate(project.created_at)}
+                              </span>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            className="saved-project-edit"
+                            onClick={() => {
+                              setEditingStyleProjectId(project.job_id);
+                              setStyleProjectNameDraft(project.display_name || project.job_id);
+                            }}
+                            title="Ubah nama proyek"
+                          >
+                            <Pencil size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="saved-project-delete"
+                            onClick={() => deleteStyleProject(project.job_id)}
+                            disabled={deletingStyleProjectId === project.job_id}
+                            title="Hapus proyek"
+                          >
+                            {deletingStyleProjectId === project.job_id ? <Loader2 size={16} className="spinner" /> : <Trash2 size={16} />}
+                          </button>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             )}
           </div>
         ) : activeTab === 'playlist' ? (

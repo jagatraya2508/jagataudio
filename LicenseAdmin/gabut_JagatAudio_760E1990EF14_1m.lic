@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "760E-1990-EF14-64E0-3E22-49DE-F621-0F80",
+    "license_type": "1m",
+    "customer_name": "gabut",
+    "issued_date": "2026-07-29T15:56:41.186815",
+    "expiry_date": "2026-08-28T15:56:41.186815",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "gL5s901sDA3tdf50aCPENWbituCPHoDbejAlM2UnXoxg0koiByJZoY4uPHlLdiTzSfw9joeWIEBfNm2s6M7jeF/KpEGfVwXtaCl7vdSZENYrdsV/NOwFlZbSwzjI5+BgO8gD6DrtIYfkQCWh7WM4EJwcK8s32qvV0A1PlTZJbBLROI9P/Bd5Z1lXisIyRpsnCw36q9a3ZgweK+mxRNkYMQU67oSJHDc4QY/bMjKNmwBdSBQgpTuDDRDZ/uJOE7WYb5paq23iuMgSH/LrXu3JS7Ik+ORSiiEDaLrIzkecsBno43fe3qH7xzgsxU31o/WiHtoZc+neO2ogxqg/zgh5TQ=="
+}

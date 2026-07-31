@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "3697-0FFB-14A5-5F51-BA4C-D675-C795",
+    "license_type": "1m",
+    "customer_name": "wahyu",
+    "issued_date": "2026-07-30T08:46:08.353914",
+    "expiry_date": "2026-08-29T08:46:08.353914",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "aWvejs6Vt0eEwsXlOdyksO1sG7Wk47hJaAjoqrLFGNHMVbz6kfraXohvsSx2PgA867SBn+K8nKWUKJqV1Pw53EuKgTN4/g5xY/6KcHodrjK4uwLq68RC7A1GeU8AFasXu8CpeSoL/3F6B7Mt7GDMm5FlLWqi49HNHc3Z6jlY+Q4PoxT/PDD5oidFkjGZCSuzvSokM2FzTTenZDARzMBz2rfffONG7TNKEIjB1JYCb4UGjx1iFNIyICdboGF6qrVBBh3uFn1pPcwfsyRsbFdADig86MMGbA/Ksl7thTiNG9UFIEn9knL5KjVADh/YhCMcm1ee2PQr523sn9YbwMuHKw=="
+}
