@@ -1359,11 +1359,115 @@ body:has(.daw-studio) .background-glow {
   background: var(--daw-surface);
   border: 1px solid var(--daw-border-bright);
   border-radius: 12px;
-  padding: 20px 24px;
-  min-width: 320px;
-  max-width: 400px;
+  padding: 24px;
+  min-width: 340px;
+  max-width: 440px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.5);
   color: var(--daw-text);
+  animation: modal-fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; transform: scale(0.96) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.daw-modal h2 {
+  margin: 0 0 24px 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.daw-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.daw-modal-field label {
+  font-size: 0.75rem;
+  color: var(--daw-text-dim);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.daw-select {
+  background: var(--daw-surface-2);
+  border: 1px solid var(--daw-border);
+  color: var(--daw-text);
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.15s;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a0a0b0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px;
+}
+
+.daw-select:focus, .daw-select:hover {
+  border-color: var(--daw-accent);
+  background: var(--daw-surface-3);
+}
+
+.daw-select option {
+  background: var(--daw-surface);
+  color: var(--daw-text);
+}
+
+.daw-modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.daw-modal-actions .daw-modal-cancel {
+  margin-top: 0;
+  flex: 1;
+  padding: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.daw-modal-confirm {
+  flex: 2;
+  background: var(--daw-accent);
+  color: #fff;
+  border: none;
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 4px 12px rgba(203,166,247,0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.daw-modal-confirm:hover:not(:disabled) {
+  background: #d8b4fe;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(203,166,247,0.4);
+}
+
+.daw-modal-confirm:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.daw-modal-confirm:disabled {
+  background: var(--daw-surface-3);
+  color: var(--daw-text-dim);
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .daw-modal-track-btn {

@@ -251,6 +251,16 @@ class DawAudioEngine {
     }
   }
 
+  setTrackReverb(trackId, wet) {
+    const n = this.trackNodes.get(trackId);
+    if (n) n.reverb.wet.value = clamp(wet, 0, 1);
+  }
+
+  setTrackDelay(trackId, wet) {
+    const n = this.trackNodes.get(trackId);
+    if (n) n.delay.wet.value = clamp(wet, 0, 1);
+  }
+
   setTrackEffects(trackId, effects) {
     const n = this.trackNodes.get(trackId);
     if (!n) return;
@@ -479,7 +489,13 @@ class DawAudioEngine {
 
   // ── Metronome ───────────────────────────────────────────────────
 
-  setMetronomeEnabled(on) { this._metronomeOn = on; }
+  setMetronomeEnabled(on, bpm = 120) {
+    this._metronomeOn = on;
+    if (this._playing) {
+      if (on) this._startMetronome(bpm, this.getCurrentPosition());
+      else this._stopMetronome();
+    }
+  }
 
   _startMetronome(bpm, fromPosition) {
     this._stopMetronome();

@@ -14,8 +14,11 @@ import {
   Music, Repeat, ChevronUp, ChevronDown,
   Scissors, MousePointer2, Eraser, ZoomIn, ZoomOut,
   Undo2, Redo2, Loader2, Copy, ArrowLeft,
-  Layers,
+  Layers, Bell, Drum,
 } from 'lucide-react';
+import { generateDrumLoop, DRUM_PRESETS } from './DrumGenerator';
+import { generateBassLoop } from './BassGenerator';
+import * as Tone from 'tone';
 import './daw.css';
 
 // ─── Constants ───────────────────────────────────────────────────
@@ -266,8 +269,34 @@ function DawStudio({ token, apiBase = '', onClose }) {
   const [exporting, setExporting]       = useState(false);
   const [exportFormat, setExportFormat] = useState('wav'); // 'wav' or 'mp3'
   const [contextMenu, setContextMenu]   = useState(null);
+  const [trackContextMenu, setTrackContextMenu] = useState(null);
   const [pendingDropFiles, setPendingDropFiles] = useState(null); // { files: File[], time: number }
   const [headersWidth, setHeadersWidth] = useState(220);
+
+  // Drum Generator State
+  const [showDrumModal, setShowDrumModal] = useState(false);
+  const [drumMode, setDrumMode] = useState('preset'); // 'preset' or 'manual'
+  const [drumGenre, setDrumGenre] = useState('rock');
+  const [drumKit, setDrumKit] = useState('acoustic');
+  const [drumFill, setDrumFill] = useState('none');
+  const [drumOutput, setDrumOutput] = useState('mixdown');
+  const [drumSwing, setDrumSwing] = useState(0);
+  const [drumBars, setDrumBars] = useState(4);
+  const [drumGrid, setDrumGrid] = useState({
+    kick: [...DRUM_PRESETS['rock'].kick],
+    snare: [...DRUM_PRESETS['rock'].snare],
+    hihat: [...DRUM_PRESETS['rock'].hihat],
+  });
+  const [isGeneratingDrum, setIsGeneratingDrum] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const previewPlayerRef = useRef(null);
+
+  // Bass Generator State
+  const [showBassModal, setShowBassModal] = useState(false);
+  const [bassKey, setBassKey] = useState('C');
+  const [bassScale, setBassScale] = useState('minor');
+  const [bassPattern, setBassPattern] = useState('offbeat');
+  const [isGeneratingBass, setIsGeneratingBass] = useState(false);
 
   // Refs
   const engineRef        = useRef(null);
@@ -342,7 +371,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
   // Sync master
   useEffect(() => { engineRef.current?.setMasterVolume(masterVol); }, [masterVol]);
   useEffect(() => { engineRef.current?.setMasterLimiter(limiterOn); }, [limiterOn]);
-  useEffect(() => { engineRef.current?.setMetronomeEnabled(metronomeOn); }, [metronomeOn]);
+  useEffect(() => { engineRef.current?.setMetronomeEnabled(metronomeOn, bpm); }, [metronomeOn, bpm]);
 
   // ============ UNDO / REDO ============
 
@@ -607,6 +636,134 @@ function DawStudio({ token, apiBase = '', onClose }) {
     }
     setExporting(false);
   }, [projectName, showToast, exportFormat, apiBase, token]);
+
+  // ============ DRUM GENERATOR ============
+
+  const handleGenerateDrum = useCallback(async () => {
+    if (isPreviewing && previewPlayerRef.current) {
+      previewPlayerRef.current.stop();
+      previewPlayerRef.current.dispose();
+      previewPlayerRef.current = null;
+      setIsPreviewing(false);
+    }
+    
+    setIsGeneratingDrum(true);
+    try {
+      if (engineRef.current) await engineRef.current.init(); // Ensure Tone is initialized
+      
+      const resultBuffer = await generateDrumLoop({
+        bpm,
+        bars: drumBars,
+        genre: 'custom',
+        customGrid: drumGrid,
+        kit: drumKit,
+        fill: drumFill,
+        splitTracks: drumOutput === 'stems',
+        swing: drumSwing
+      });
+      
+      if (drumOutput === 'stems') {
+        const loadedStems = [];
+        for (const [instName, buf] of Object.entries(resultBuffer)) {
+          const nativeBuffer = buf.get ? buf.get() : buf;
+          const wavBlob = audioBufferToWav(nativeBuffer);
+          const file = new File([wavBlob], `Drum_${instName}_${bpm}bpm.wav`, { type: 'audio/wav' });
+          const result = await engineRef.current.loadAudioFile(file);
+          loadedStems.push({ instName, ...result });
+        }
+        
+        setAudioLib(prev => {
+          const next = { ...prev };
+          loadedStems.forEach(s => {
+            next[s.audioId] = { name: s.name, duration: s.duration, peaks: s.peaks };
+          });
+          return next;
+        });
+
+        setTracks(prev => {
+          const newTracks = loadedStems.map((s, idx) => {
+            const trk = createDefaultTrack(prev.length + idx);
+            trk.name = `Drum ${s.instName}`;
+            trk.regions = [createRegion(s.audioId, cursorRef.current, s.duration, s.name)];
+            return trk;
+          });
+          const t = [...prev, ...newTracks];
+          pushUndo(t);
+          return t;
+        });
+      } else {
+        const nativeBuffer = resultBuffer.get ? resultBuffer.get() : resultBuffer;
+        const wavBlob = audioBufferToWav(nativeBuffer);
+        const file = new File([wavBlob], `Drum_${drumMode === 'preset' ? drumGenre : 'custom'}_${bpm}bpm.wav`, { type: 'audio/wav' });
+        await importAudioFiles([file], null, cursorRef.current);
+      }
+      
+      setShowDrumModal(false);
+      showToast('Drum berhasil digenerate!', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal: ' + (err.message || err), 'error');
+    }
+    setIsGeneratingDrum(false);
+  }, [bpm, drumBars, drumGenre, drumKit, drumFill, drumOutput, drumGrid, drumSwing, importAudioFiles, showToast, pushUndo, isPreviewing]);
+
+  const handlePreviewDrum = useCallback(async () => {
+    if (isPreviewing) {
+      if (previewPlayerRef.current) {
+        previewPlayerRef.current.stop();
+        previewPlayerRef.current.dispose();
+        previewPlayerRef.current = null;
+      }
+      setIsPreviewing(false);
+      return;
+    }
+    
+    try {
+      if (engineRef.current) await engineRef.current.init();
+      const resultBuffer = await generateDrumLoop({
+        bpm,
+        bars: 2, // Preview 2 bars to hear swing and fill context
+        genre: 'custom',
+        customGrid: drumGrid,
+        kit: drumKit,
+        fill: drumFill,
+        splitTracks: false,
+        swing: drumSwing
+      });
+      
+      const toneBuffer = new Tone.ToneAudioBuffer(resultBuffer);
+      const player = new Tone.Player(toneBuffer).toDestination();
+      player.loop = true;
+      player.start();
+      
+      previewPlayerRef.current = player;
+      setIsPreviewing(true);
+    } catch (err) {
+      console.error('Preview error:', err);
+      showToast('Gagal preview: ' + (err.message || err), 'error');
+      setIsPreviewing(false);
+    }
+  }, [bpm, drumKit, drumFill, drumGrid, drumSwing, isPreviewing, showToast]);
+
+  const handleGenerateBass = useCallback(async () => {
+    setIsGeneratingBass(true);
+    try {
+      const file = await generateBassLoop({
+        bpm,
+        bars: drumBars, // Reusing drumBars for simplicity
+        key: bassKey,
+        scale: bassScale,
+        pattern: bassPattern
+      });
+      await importAudioFiles([file], null, cursorRef.current);
+      setShowBassModal(false);
+      showToast('Bass berhasil digenerate!', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal generate bass: ' + (err.message || err), 'error');
+    }
+    setIsGeneratingBass(false);
+  }, [bpm, drumBars, bassKey, bassScale, bassPattern, importAudioFiles, showToast]);
 
   // ============ PROJECT SAVE / LOAD ============
 
@@ -1359,6 +1516,13 @@ function DawStudio({ token, apiBase = '', onClose }) {
     return () => window.removeEventListener('click', handler);
   }, [contextMenu]);
 
+  useEffect(() => {
+    if (!trackContextMenu) return;
+    const handler = () => setTrackContextMenu(null);
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [trackContextMenu]);
+
   // ============ DRAG & DROP ============
 
   const handleDragOver = useCallback((e) => {
@@ -1472,6 +1636,26 @@ function DawStudio({ token, apiBase = '', onClose }) {
     setSelectedIds(prev => { const s = new Set(prev); s.delete(contextMenu.regionId); return s; });
     setContextMenu(null);
   }, [contextMenu, pushUndo]);
+
+  const ctxDuplicateTrack = useCallback(() => {
+    if (!trackContextMenu) return;
+    setTracks(prev => {
+      const idx = prev.findIndex(t => t.id === trackContextMenu.trackId);
+      if (idx === -1) return prev;
+      const t = prev[idx];
+      const newTrack = {
+        ...t,
+        id: uid('track'),
+        name: t.name + ' (Copy)',
+        regions: t.regions.map(r => ({ ...r, id: uid('region') }))
+      };
+      const next = [...prev];
+      next.splice(idx + 1, 0, newTrack);
+      pushUndo(next);
+      return next;
+    });
+    setTrackContextMenu(null);
+  }, [trackContextMenu, pushUndo]);
 
   // ============ NEW PROJECT ============
 
@@ -1611,7 +1795,13 @@ function DawStudio({ token, apiBase = '', onClose }) {
             <Repeat size={16} />
           </button>
           <button className={`daw-transport-btn ${metronomeOn ? 'active' : ''}`} onClick={() => setMetronomeOn(v => !v)} title="Metronome">
-            <Music size={16} />
+            <Bell size={16} />
+          </button>
+          <button className={`daw-transport-btn`} onClick={() => setShowDrumModal(true)} title="Generate Drum Loop">
+            <Drum size={16} />
+          </button>
+          <button className={`daw-transport-btn`} onClick={() => setShowBassModal(true)} title="Generate Bassline" style={{ fontWeight: 800, fontSize: '0.8rem' }}>
+            ~
           </button>
         </div>
 
@@ -1637,24 +1827,17 @@ function DawStudio({ token, apiBase = '', onClose }) {
 
         <div className="daw-transport-spacer" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <span style={{
-            fontSize: '1.25rem',
-            fontWeight: 900,
-            color: '#ffedd5',
-            letterSpacing: '4px',
+            fontFamily: '"Outfit", "Inter", sans-serif',
+            fontSize: '1.4rem',
+            fontWeight: 800,
+            background: 'linear-gradient(135deg, #ffffff 0%, #f97316 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            letterSpacing: '3px',
             textTransform: 'uppercase',
-            textShadow: `
-              0px 1px 0px #fdba74,
-              0px 2px 0px #f97316,
-              0px 3px 0px #ea580c,
-              0px 4px 0px #c2410c,
-              0px 5px 0px #7c2d12,
-              0px 6px 4px rgba(0,0,0,0.6),
-              0px -1px 2px rgba(255,255,255,0.8),
-              0px 0px 15px rgba(249,115,22,0.4)
-            `,
             userSelect: 'none',
-            transform: 'perspective(300px) rotateX(10deg)',
-            display: 'inline-block'
+            display: 'inline-block',
+            filter: 'drop-shadow(0 2px 8px rgba(249, 115, 22, 0.35))'
           }}>
             JAGAT DAW
           </span>
@@ -1782,6 +1965,10 @@ function DawStudio({ token, apiBase = '', onClose }) {
               key={track.id}
               className="daw-track-header"
               style={{ height: trackHeight, '--track-color': track.color }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setTrackContextMenu({ x: e.clientX, y: e.clientY, trackId: track.id });
+              }}
             >
               <div className="daw-track-header-top">
                 <input
@@ -2195,6 +2382,199 @@ function DawStudio({ token, apiBase = '', onClose }) {
         </div>
       )}
 
+      {/* ── Drum Generator Modal ── */}
+      {showDrumModal && (
+        <div className="daw-overlay">
+          <div className="daw-modal" style={{ maxWidth: 500 }}>
+            <h2>Generate Drum Loop & Simulator</h2>
+            
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Genre / Style</label>
+                <select className="daw-select" value={drumGenre} onChange={e => {
+                  const g = e.target.value;
+                  setDrumGenre(g);
+                  if (DRUM_PRESETS[g]) {
+                    setDrumGrid({
+                      kick: [...DRUM_PRESETS[g].kick],
+                      snare: [...DRUM_PRESETS[g].snare],
+                      hihat: [...DRUM_PRESETS[g].hihat]
+                    });
+                  }
+                }}>
+                  {Object.keys(DRUM_PRESETS).map(k => (
+                    <option key={k} value={k}>{DRUM_PRESETS[k].name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Drum Kit</label>
+                <select className="daw-select" value={drumKit} onChange={e => setDrumKit(e.target.value)}>
+                  <option value="acoustic">Standard Acoustic</option>
+                  <option value="808">Analog 808</option>
+                  <option value="909">Electric 909</option>
+                  <option value="lofi">Lo-Fi Vintage</option>
+                </select>
+              </div>
+            </div>
+
+            {/* 16-Step Visualizer / Simulator */}
+            <div style={{ marginBottom: 20, background: 'var(--daw-surface-2)', padding: 12, borderRadius: 8, border: '1px solid var(--daw-border)' }}>
+                {['hihat', 'snare', 'kick'].map(inst => (
+                  <div key={inst} style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ width: 50, color: 'var(--daw-text-dim)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase' }}>{inst}</div>
+                    <div style={{ display: 'flex', gap: 3, flex: 1 }}>
+                      {drumGrid[inst].map((val, i) => (
+                        <div 
+                          key={i} 
+                          onClick={() => setDrumGrid(prev => {
+                            const n = {...prev};
+                            n[inst] = [...n[inst]];
+                            n[inst][i] = n[inst][i] ? 0 : 1;
+                            return n;
+                          })}
+                          style={{
+                            flex: 1, height: 26, background: val ? 'var(--daw-accent)' : 'var(--daw-surface-3)',
+                            border: `1px solid ${val ? 'transparent' : (i % 4 === 0 ? 'var(--daw-border-bright)' : 'var(--daw-border)')}`,
+                            borderRadius: 3,
+                            cursor: 'pointer',
+                            opacity: val ? 1 : 0.6,
+                            transition: 'all 0.1s'
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Durasi (Bars)</label>
+                <select className="daw-select" value={drumBars} onChange={e => setDrumBars(Number(e.target.value))}>
+                  <option value={2}>2 Bars</option>
+                  <option value={4}>4 Bars</option>
+                  <option value={8}>8 Bars</option>
+                  <option value={16}>16 Bars</option>
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Drum Fill (Akhir Loop)</label>
+                <select className="daw-select" value={drumFill} onChange={e => setDrumFill(e.target.value)}>
+                  <option value="none">Tanpa Fill</option>
+                  <option value="snare_roll">Snare Roll 16th</option>
+                  <option value="classic_tom">Classic Tom Fill</option>
+                  <option value="trap_hat">Trap Hat Roll</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Output Format</label>
+                <select className="daw-select" value={drumOutput} onChange={e => setDrumOutput(e.target.value)}>
+                  <option value="mixdown">Single Track (Mixdown)</option>
+                  <option value="stems">Separate Tracks (Multitrack Stems)</option>
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Swing / Humanize</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <input type="range" className="daw-fx-slider" min={0} max={0.6} step={0.05} value={drumSwing} onChange={e => setDrumSwing(Number(e.target.value))} style={{ flex: 1 }} />
+                  <span className="daw-fx-value" style={{ width: 40 }}>{Math.round(drumSwing * 100)}%</span>
+                </div>
+              </div>
+            </div>
+            
+            <p style={{ fontSize: '0.8rem', color: 'var(--daw-text-dim)', marginBottom: 0, marginTop: 12, lineHeight: 1.5 }}>
+              Ketukan disesuaikan dengan Tempo Project <strong>{bpm} BPM</strong>.<br/>
+              {drumOutput === 'stems' ? 'Sistem akan membuat 4 Track baru secara otomatis.' : 'Loop akan disisipkan di posisi kursor.'}
+            </p>
+
+            <div className="daw-modal-actions">
+              <button 
+                className={`daw-action-btn ${isPreviewing ? 'active' : ''}`} 
+                onClick={handlePreviewDrum}
+                style={{ flex: 1, backgroundColor: isPreviewing ? 'var(--daw-accent)' : 'var(--daw-surface-2)', color: isPreviewing ? '#fff' : 'inherit' }}
+              >
+                {isPreviewing ? '⏹ Stop Preview' : '▶️ Preview Play'}
+              </button>
+            </div>
+
+            <div className="daw-modal-actions" style={{ marginTop: 10 }}>
+              <button className="daw-modal-cancel" onClick={() => {
+                if (isPreviewing && previewPlayerRef.current) {
+                  previewPlayerRef.current.stop();
+                  previewPlayerRef.current = null;
+                  setIsPreviewing(false);
+                }
+                setShowDrumModal(false);
+              }}>Batal</button>
+              <button 
+                className="daw-modal-confirm" 
+                onClick={handleGenerateDrum}
+                disabled={isGeneratingDrum}
+              >
+                {isGeneratingDrum ? 'Generating...' : 'Generate & Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bass Generator Modal ── */}
+      {showBassModal && (
+        <div className="daw-overlay">
+          <div className="daw-modal" style={{ maxWidth: 500 }}>
+            <h2>Generate Bassline</h2>
+            
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Nada Dasar (Key)</label>
+                <select className="daw-select" value={bassKey} onChange={e => setBassKey(e.target.value)}>
+                  {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(k => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Skala (Scale)</label>
+                <select className="daw-select" value={bassScale} onChange={e => setBassScale(e.target.value)}>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Pola (Pattern)</label>
+                <select className="daw-select" value={bassPattern} onChange={e => setBassPattern(e.target.value)}>
+                  <option value="offbeat">Offbeat (House/Techno)</option>
+                  <option value="rolling">Rolling (Trance/Psy)</option>
+                  <option value="groove">Funky Groove</option>
+                </select>
+              </div>
+            </div>
+            
+            <p style={{ fontSize: '0.8rem', color: 'var(--daw-text-dim)', marginBottom: 0, marginTop: 12, lineHeight: 1.5 }}>
+              Bass akan dirender dalam {drumBars} Bars mengikuti tempo <strong>{bpm} BPM</strong>.
+            </p>
+
+            <div className="daw-modal-actions">
+              <button className="daw-modal-cancel" onClick={() => setShowBassModal(false)}>Batal</button>
+              <button 
+                className="daw-modal-confirm" 
+                onClick={handleGenerateBass}
+                disabled={isGeneratingBass}
+              >
+                {isGeneratingBass ? 'Generating...' : 'Generate & Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Context Menu ── */}
       {contextMenu && (
         <div className="daw-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
@@ -2207,6 +2587,26 @@ function DawStudio({ token, apiBase = '', onClose }) {
           <div className="daw-context-menu-separator" />
           <button className="daw-context-menu-item danger" onClick={ctxDelete}>
             <Trash2 size={14} /> Hapus
+          </button>
+        </div>
+      )}
+
+      {/* ── Track Context Menu ── */}
+      {trackContextMenu && (
+        <div className="daw-context-menu" style={{ left: trackContextMenu.x, top: trackContextMenu.y }}>
+          <button className="daw-context-menu-item" onClick={() => { updateTrackPush(trackContextMenu.trackId, { mute: true }); setTrackContextMenu(null); }}>
+            Disable Track (Mute)
+          </button>
+          <button className="daw-context-menu-item" onClick={ctxDuplicateTrack}>
+            <Copy size={14} /> Duplicate Track (Complete)
+          </button>
+          <div className="daw-context-menu-separator" />
+          <button className="daw-context-menu-item danger" onClick={() => { removeTrack(trackContextMenu.trackId); setTrackContextMenu(null); }}>
+            <Trash2 size={14} /> Remove Track
+          </button>
+          <div className="daw-context-menu-separator" />
+          <button className="daw-context-menu-item" onClick={() => { addTrack(); setTrackContextMenu(null); }}>
+            <Plus size={14} /> Add Tracks
           </button>
         </div>
       )}
