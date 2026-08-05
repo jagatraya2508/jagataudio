@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle, Layers } from 'lucide-react';
+import DawStudio from './DawStudio';
 import './index.css';
 
 // Production (JagatAudio.exe): API & UI one origin → ikut port otomatis.
@@ -16,14 +17,13 @@ const EQ_BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const EQ_BAND_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
 const flatEqBands = () => EQ_BAND_FREQS.map(() => 0);
 
-/** Saat pitch=0, grain besar (≈2s) agar GrainPlayer berperilaku seperti Player biasa (tanpa artefak).
- *  Saat pitch digeser, grain mengecil untuk pitch-shifting yang halus. */
+/** Konfigurasi Granular Synthesis untuk pitch-shift & tempo-stretch halus tanpa pengulangan (stutter-free).
+ *  Grain size 80ms dengan 40ms crossfade memastikan peregangan tempo dan pitch berjalan mulus. */
 const grainSizeForPitch = (semitones) => {
   const abs = Math.abs(Number(semitones) || 0);
-  if (abs < 0.1) return 2.0; // pitch normal → grain besar, tanpa artefak
-  return Math.min(0.28, 0.16 + abs * 0.012);
+  return Math.max(0.06, Math.min(0.12, 0.08 + abs * 0.003));
 };
-const GRAIN_OVERLAP = 0.1;
+const GRAIN_OVERLAP = 0.04;
 
 const LRC_TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]/g;
 
@@ -471,7 +471,7 @@ function EditableValue({
 
 function App() {
   // Tab navigation
-  const [activeTab, setActiveTab] = useState('stems'); // 'stems' | 'yt2mp3' | 'playlist' | 'style'
+  const [activeTab, setActiveTab] = useState('stems'); // 'stems' | 'yt2mp3' | 'playlist' | 'style' | 'daw'
   
   // Gear Detector States
   const [styleFile, setStyleFile] = useState(null);
@@ -2037,10 +2037,10 @@ function App() {
 
   useEffect(() => {
     return () => {
-      Object.values(playersRef.current).forEach(p => p.dispose());
-      Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
+      Object.values(playersRef.current).forEach(p => { try { p.dispose(); } catch {} });
+      Object.values(volumeNodesRef.current).forEach(v => { try { v.dispose(); } catch {} });
       disposeVocalPitchAnalyser();
-      Object.values(preFxNodesRef.current).forEach(g => g.dispose());
+      Object.values(preFxNodesRef.current).forEach(g => { try { g.dispose(); } catch {} });
       disposeMasterChain();
     };
   }, []);
@@ -2166,14 +2166,19 @@ function App() {
         const currentTime = Tone.Transport.seconds;
         const effectiveEnd = trimEnabled && trimEnd != null ? trimEnd : stemDuration;
         if (effectiveEnd > 0 && currentTime >= effectiveEnd) {
-           Tone.Transport.stop();
-           setIsPlaying(false);
-           const resetTo = trimEnabled ? trimStart : 0;
-           Tone.Transport.seconds = resetTo;
-           setStemCurrentTime(resetTo);
+          Tone.Transport.stop();
+          setIsPlaying(false);
+          const resetTo = trimEnabled ? trimStart : 0;
+          Tone.Transport.seconds = resetTo;
+          setStemCurrentTime(resetTo);
+          if (stemVideoRef.current) {
+            stemVideoRef.current.pause();
+            stemVideoRef.current.currentTime = resetTo;
+          }
         } else {
-           setStemCurrentTime(currentTime);
-           animationFrameId = requestAnimationFrame(updateProgress);
+          setStemCurrentTime(currentTime);
+          syncStemLyricsToTime(currentTime);
+          animationFrameId = requestAnimationFrame(updateProgress);
         }
       }
     };
@@ -2181,7 +2186,7 @@ function App() {
       animationFrameId = requestAnimationFrame(updateProgress);
     }
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, stemDuration, trimEnabled, trimStart, trimEnd]);
+  }, [isPlaying, stemDuration, trimEnabled, trimStart, trimEnd, stemLyrics, stemLyricsOffsetMs, stemLyricsSpeedPct]);
 
   const resetStemLyrics = () => {
     setStemLyrics(null);
@@ -2211,9 +2216,9 @@ function App() {
     setStemLyricsStatus(searched ? `Lirik: ${searched}` : 'Lirik dimuat.');
   };
 
-  const syncStemLyricsToTime = (transportTime) => {
+  const syncStemLyricsToTime = (currentTime) => {
     if (stemLyrics?.type !== 'lrc' || !stemLyrics.lines?.length) return;
-    const effectiveTime = transportTime * tempo;
+    const effectiveTime = currentTime;
     const offsetMs = stemLyricsOffsetMs - (stemLyrics.offset || 0);
     const { activeIndex, progress, activeWordIndex } = getLyricSyncState(
       stemLyrics.lines, effectiveTime, offsetMs, stemLyricsSpeedPct
@@ -2339,16 +2344,15 @@ function App() {
   const syncStemLyricLineToNow = (lineIndex) => {
     const line = stemLyrics?.lines?.[lineIndex];
     if (!line) return;
-    const effectiveTime = stemCurrentTime * tempo;
     const speed = stemLyricsSpeedPct / 100;
-    const effectiveMs = Math.round((line.time / speed - effectiveTime) * 1000);
+    const effectiveMs = Math.round((line.time / speed - stemCurrentTime) * 1000);
     setStemLyricsOffsetMs(effectiveMs + (stemLyrics.offset || 0));
     syncStemLyricsToTime(stemCurrentTime);
   };
 
   useEffect(() => {
     syncStemLyricsToTime(stemCurrentTime);
-  }, [stemCurrentTime, tempo, stemLyrics, stemLyricsOffsetMs, stemLyricsSpeedPct]);
+  }, [stemCurrentTime, stemLyrics, stemLyricsOffsetMs, stemLyricsSpeedPct]);
 
   useEffect(() => {
     stemActiveLyricRef.current?.scrollIntoView({ behavior: 'auto', block: 'center' });
@@ -2770,17 +2774,15 @@ function App() {
     const nextTempo = settings.tempo ?? 1;
     setPitch(nextPitch);
     setTempo(nextTempo);
-    Object.values(playersRef.current).forEach((p) => {
-      if (p?.playbackRate !== undefined) p.playbackRate = nextTempo;
-    });
-    // Update pitch secara real-time (GrainPlayer selalu digunakan)
     const cents = nextPitch * 100;
     const gs = grainSizeForPitch(nextPitch);
     Object.values(playersRef.current).forEach((p) => {
       if (!p) return;
+      if (p.playbackRate !== undefined) p.playbackRate = nextTempo;
       if (p.detune !== undefined) p.detune = cents;
       if ('grainSize' in p) p.grainSize = gs;
     });
+    if (stemVideoRef.current) stemVideoRef.current.playbackRate = nextTempo;
 
     const low = settings.eq_low ?? 0;
     const mid = settings.eq_mid ?? 0;
@@ -2942,8 +2944,8 @@ function App() {
     Tone.Transport.stop();
     Tone.Transport.seconds = 0;
     setIsPlaying(false);
-    Object.values(playersRef.current).forEach((p) => p.dispose());
-    Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
+    Object.values(playersRef.current).forEach((p) => { try { p.dispose(); } catch {} });
+    Object.values(volumeNodesRef.current).forEach((v) => { try { v.dispose(); } catch {} });
     Object.values(pannerNodesRef.current).forEach((p) => { try { p.dispose(); } catch {} });
     disposeVocalPitchAnalyser();
     disposeMasterChain();
@@ -2994,8 +2996,8 @@ function App() {
     try {
       await Tone.start();
 
-      Object.values(playersRef.current).forEach(p => p.dispose());
-      Object.values(volumeNodesRef.current).forEach(v => v.dispose());
+      Object.values(playersRef.current).forEach(p => { try { p.dispose(); } catch {} });
+      Object.values(volumeNodesRef.current).forEach(v => { try { v.dispose(); } catch {} });
       Object.values(pannerNodesRef.current).forEach(p => { try { p.dispose(); } catch {} });
       disposeVocalPitchAnalyser();
       disposeMasterChain();
@@ -3111,7 +3113,6 @@ function App() {
       const initPans = {};
       let loadedCount = 0;
 
-      // Selalu gunakan GrainPlayer agar pitch bisa diubah real-time tanpa rebuild.
       const loadPitch = settings?.pitch ?? pitch;
       const loadTempo = settings?.tempo ?? tempo;
 
@@ -3236,8 +3237,8 @@ function App() {
 
     Tone.Transport.stop();
     setIsPlaying(false);
-    Object.values(playersRef.current).forEach((p) => p.dispose());
-    Object.values(volumeNodesRef.current).forEach((v) => v.dispose());
+    Object.values(playersRef.current).forEach((p) => { try { p.dispose(); } catch {} });
+    Object.values(volumeNodesRef.current).forEach((v) => { try { v.dispose(); } catch {} });
     disposeMasterChain();
 
     resetStemLyrics();
@@ -4391,6 +4392,12 @@ function App() {
             <Sparkles size={18} /> AI Partitur
           </button>
           <button
+            className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daw')}
+          >
+            <Layers size={18} /> DAW Studio
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
@@ -4435,6 +4442,12 @@ function App() {
             onClick={() => setActiveTab('style')}
           >
             <Sparkles size={18} /> Guitar Gear Detector
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daw')}
+          >
+            <Layers size={18} /> DAW Studio
           </button>
           <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
@@ -4524,7 +4537,7 @@ function App() {
   // ============================================
 
   const isStemVideo = isVideoFile(stemOriginalName || file?.name);
-  const isStudioFullPage = activeTab === 'stems' && status === 'ready';
+  const isStudioFullPage = (activeTab === 'stems' && status === 'ready') || activeTab === 'daw';
 
   return (
     <div className={`app-container${isStudioFullPage ? ' app-container--studio-full' : ''}`}>
@@ -4610,6 +4623,12 @@ function App() {
             onClick={() => setActiveTab('style')}
           >
             <Sparkles size={18} /> Guitar Gear Detector
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daw')}
+          >
+            <Layers size={18} /> DAW Studio
           </button>
           <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
@@ -7304,6 +7323,8 @@ function App() {
 
             </div>
           </div>
+        ) : activeTab === 'daw' ? (
+          <DawStudio token={token} apiBase={API_BASE_URL} onClose={() => setActiveTab('stems')} />
         ) : null}
 
         {showSearchModal && (

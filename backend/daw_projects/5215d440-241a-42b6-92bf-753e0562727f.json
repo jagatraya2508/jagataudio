@@ -1,0 +1,99 @@
+{
+  "name": "Untitled Project",
+  "bpm": 120,
+  "timeSignature": [
+    4,
+    4
+  ],
+  "tracks": [
+    {
+      "id": "track_1785752172118_5",
+      "name": "Track 1",
+      "color": "#3a86ff",
+      "volume": 0,
+      "pan": 0,
+      "mute": false,
+      "solo": false,
+      "armed": false,
+      "regions": [
+        {
+          "id": "region_1785752181502_7",
+          "audioId": "audio_1785752180109_1w5qsc",
+          "name": "Avenged Sevenfold - Nightmare Official Music Video.mp3",
+          "startTime": 1.5,
+          "duration": 375.14158333333336,
+          "offset": 0,
+          "gain": 0,
+          "fadeIn": 0,
+          "fadeOut": 0
+        }
+      ],
+      "effects": {
+        "eq": {
+          "enabled": false,
+          "low": 0,
+          "mid": 0,
+          "high": 0
+        },
+        "compressor": {
+          "enabled": false,
+          "threshold": -24,
+          "ratio": 4,
+          "attack": 0.003,
+          "release": 0.25
+        },
+        "reverb": {
+          "enabled": false,
+          "wet": 0.3,
+          "decay": 1.5
+        },
+        "delay": {
+          "enabled": false,
+          "wet": 0.2,
+          "feedback": 0.3
+        }
+      }
+    },
+    {
+      "id": "track_1785752172118_6",
+      "name": "Track 2",
+      "color": "#ff006e",
+      "volume": 0,
+      "pan": 0,
+      "mute": false,
+      "solo": false,
+      "armed": false,
+      "regions": [],
+      "effects": {
+        "eq": {
+          "enabled": false,
+          "low": 0,
+          "mid": 0,
+          "high": 0
+        },
+        "compressor": {
+          "enabled": false,
+          "threshold": -24,
+          "ratio": 4,
+          "attack": 0.003,
+          "release": 0.25
+        },
+        "reverb": {
+          "enabled": false,
+          "wet": 0.3,
+          "decay": 1.5
+        },
+        "delay": {
+          "enabled": false,
+          "wet": 0.2,
+          "feedback": 0.3
+        }
+      }
+    }
+  ],
+  "masterVolume": 0,
+  "masterLimiterEnabled": true,
+  "created": "2026-08-03T10:16:36.228583+00:00",
+  "modified": "2026-08-03T10:16:36.228583+00:00",
+  "owner": "admin"
+}

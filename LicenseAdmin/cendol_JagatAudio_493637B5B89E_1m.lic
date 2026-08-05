@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "4936-37B5-B89E-BD65-966B-402A-3CCF-4B4F",
+    "license_type": "1m",
+    "customer_name": "cendol",
+    "issued_date": "2026-08-02T02:13:38.694376",
+    "expiry_date": "2026-09-01T02:13:38.694376",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "i6LqbNfrCeXoZCHFmQIcOHnBqckHhNelfV8yJqY8PmTv+JsurjBbAHtZw8hH6aGEAZ40UxuAlFuFqAqy2CQ885RUVftwLGnh/dCeeFxK/8qQok7W1uPU3QXcFayv2F8pHFHuyJxFlW2847xYjyWxyFLwVBjVxvgSa0yYaRm/NAVl086u0EZO2xKvBikxXuxlqBvQN9nBfvNsZfG36t22XRX5GMt8zaMg80D9W74AYSKoUjt4dWuw/DuqxC/Ep8dkABVkwhWoR9BKfuS64y5/c1QNqQEAqs3nPDbX0p6mPyzx60bMXTGoSuaXGVHLkMR0/Bq6uf20EXn1cOFKh2VumA=="
+}

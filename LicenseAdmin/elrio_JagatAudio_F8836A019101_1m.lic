@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F883-6A01-9101-832A-DCFB-D609-8D2A-7B46",
+    "license_type": "1m",
+    "customer_name": "elrio",
+    "issued_date": "2026-08-02T02:12:29.808424",
+    "expiry_date": "2026-09-01T02:12:29.808424",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "Ky/kdjbPYA0dkDx5oNnXjbDSpiC3+5AboB/qWKZE9tPmE7i03NvDeOmrt/OSQa0O/5CewfGi5tgL8fF1MewFtjSPOcM1ud7crO2FhKz/ZzOtkKK8vPylLXSDcSIhhugPqz1ADek5LC9sIg9bNRiQqoSwyBUijUc921xhoxZbucszAx1jHfQ8YnMaw/kFR6J0LfLabw6iOe6ZtZLrVuevhQn24GBoJTbCB/DeNjPIJI7yZRwLNfUmto6N9L7Vcjk6XXCsJLdbL+hXNSQey2TMraevVyS8+iTkTIv7HFhTFZwZtI3OtwSYQ6v0g2KAWSLdA5UtMawyLAvn+MZngcbMiw=="
+}

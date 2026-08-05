@@ -1,0 +1,101 @@
+{
+  "name": "wisnu",
+  "bpm": 120,
+  "timeSignature": [
+    4,
+    4
+  ],
+  "tracks": [
+    {
+      "id": "track_1785828457539_5",
+      "name": "Track 1",
+      "color": "#3a86ff",
+      "volume": 0,
+      "pan": 0,
+      "mute": false,
+      "solo": false,
+      "armed": false,
+      "inputId": "default",
+      "regions": [],
+      "effects": {
+        "eq": {
+          "enabled": false,
+          "low": 0,
+          "mid": 0,
+          "high": 0
+        },
+        "compressor": {
+          "enabled": false,
+          "threshold": -24,
+          "ratio": 4,
+          "attack": 0.003,
+          "release": 0.25
+        },
+        "reverb": {
+          "enabled": false,
+          "wet": 0.3,
+          "decay": 1.5
+        },
+        "delay": {
+          "enabled": false,
+          "wet": 0.2,
+          "feedback": 0.3
+        }
+      }
+    },
+    {
+      "id": "track_1785828457539_6",
+      "name": "Track 2",
+      "color": "#ff006e",
+      "volume": 0,
+      "pan": 0,
+      "mute": false,
+      "solo": false,
+      "armed": false,
+      "inputId": "default",
+      "regions": [
+        {
+          "id": "region_1785828476031_8",
+          "audioId": "audio_1785828470965_mdrz28",
+          "name": "Avenged Sevenfold - Nightmare Official Music Video.mp3",
+          "startTime": 4,
+          "duration": 50,
+          "offset": 0,
+          "gain": 0,
+          "fadeIn": 0,
+          "fadeOut": 0
+        }
+      ],
+      "effects": {
+        "eq": {
+          "enabled": false,
+          "low": 0,
+          "mid": 0,
+          "high": 0
+        },
+        "compressor": {
+          "enabled": false,
+          "threshold": -24,
+          "ratio": 4,
+          "attack": 0.003,
+          "release": 0.25
+        },
+        "reverb": {
+          "enabled": false,
+          "wet": 0.3,
+          "decay": 1.5
+        },
+        "delay": {
+          "enabled": false,
+          "wet": 0.2,
+          "feedback": 0.3
+        }
+      }
+    }
+  ],
+  "masterVolume": 0,
+  "masterLimiterEnabled": true,
+  "created": "2026-08-04T07:28:02.319127+00:00",
+  "modified": "2026-08-04T07:30:05.566906+00:00",
+  "owner": "admin"
+}

@@ -33,7 +33,7 @@ if getattr(sys, 'frozen', False):
 
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -2382,30 +2382,6 @@ if IS_BUNDLED:
 else:
     FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend', 'dist')
 
-if os.path.exists(FRONTEND_DIR):
-    # Serve static assets (JS, CSS, images)
-    assets_dir = os.path.join(FRONTEND_DIR, 'assets')
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-    
-    @app.get("/")
-    async def serve_frontend():
-        index_path = os.path.join(FRONTEND_DIR, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return JSONResponse(content={"message": "JagatAudio API is running"})
-    
-    @app.get("/{full_path:path}")
-    async def serve_frontend_fallback(full_path: str):
-        # Try to serve static file first
-        file_path = os.path.join(FRONTEND_DIR, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        # Fallback to index.html for SPA routing
-        index_path = os.path.join(FRONTEND_DIR, 'index.html')
-        if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return JSONResponse(status_code=404, content={"message": "Not found"})
 
 APP_HOST = "127.0.0.1"
 PREFERRED_PORT = 8000
@@ -2539,6 +2515,170 @@ def _prepare_bundled_startup() -> tuple[str, int | None]:
         return "start", PREFERRED_PORT
 
     return "blocked", None
+
+
+# ============================================
+# DAW PROJECT ENDPOINTS
+# ============================================
+
+DAW_PROJECTS_DIR = os.path.join(app_data, "daw_projects")
+os.makedirs(DAW_PROJECTS_DIR, exist_ok=True)
+
+
+def _daw_project_path(project_id: str) -> str:
+    return os.path.join(DAW_PROJECTS_DIR, f"{project_id}.json")
+
+
+def _daw_project_list():
+    """List all DAW project summaries."""
+    projects = []
+    if not os.path.isdir(DAW_PROJECTS_DIR):
+        return projects
+    for fname in os.listdir(DAW_PROJECTS_DIR):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(DAW_PROJECTS_DIR, fname)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            projects.append({
+                "id": fname.replace(".json", ""),
+                "name": data.get("name", "Untitled"),
+                "bpm": data.get("bpm", 120),
+                "trackCount": len(data.get("tracks", [])),
+                "created": data.get("created"),
+                "modified": data.get("modified"),
+            })
+        except Exception:
+            pass
+    projects.sort(key=lambda p: p.get("modified") or "", reverse=True)
+    return projects
+
+
+@app.get("/api/daw/projects")
+async def daw_list_projects(current_user: dict = Depends(get_current_user)):
+    return _daw_project_list()
+
+
+@app.post("/api/daw/projects")
+async def daw_create_project(request: Request, current_user: dict = Depends(get_current_user)):
+    data = await request.json()
+    project_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    data["created"] = now
+    data["modified"] = now
+    data["owner"] = current_user.get("username", "")
+    with open(_daw_project_path(project_id), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"id": project_id, "status": "created"}
+
+
+@app.get("/api/daw/projects/{project_id}")
+async def daw_get_project(project_id: str, current_user: dict = Depends(get_current_user)):
+    path = _daw_project_path(project_id)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Project not found")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data
+
+
+@app.put("/api/daw/projects/{project_id}")
+async def daw_update_project(project_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    path = _daw_project_path(project_id)
+    data = await request.json()
+    # Preserve created date if exists
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            data["created"] = existing.get("created", datetime.now(timezone.utc).isoformat())
+        except Exception:
+            data["created"] = datetime.now(timezone.utc).isoformat()
+    else:
+        data["created"] = datetime.now(timezone.utc).isoformat()
+    data["modified"] = datetime.now(timezone.utc).isoformat()
+    data["owner"] = current_user.get("username", "")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return {"id": project_id, "status": "updated"}
+
+
+@app.delete("/api/daw/projects/{project_id}")
+async def daw_delete_project(project_id: str, current_user: dict = Depends(get_current_user)):
+    path = _daw_project_path(project_id)
+    if os.path.exists(path):
+        os.remove(path)
+    return {"id": project_id, "status": "deleted"}
+
+
+@app.post("/api/daw/export_mp3")
+async def daw_export_mp3(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    import tempfile
+    import subprocess
+    
+    # Find ffmpeg executable
+    ffmpeg_dir = _resolve_ffmpeg_dir()
+    if ffmpeg_dir:
+        ffmpeg_exe = os.path.join(ffmpeg_dir, 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+        if not os.path.isfile(ffmpeg_exe):
+            ffmpeg_exe = 'ffmpeg'  # fallback to PATH
+    else:
+        ffmpeg_exe = 'ffmpeg'
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = os.path.join(tmpdir, "input.wav")
+        mp3_path = os.path.join(tmpdir, "output.mp3")
+        
+        with open(wav_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+            
+        try:
+            # Convert WAV to MP3 using FFmpeg, 192k bitrate
+            result = subprocess.run([
+                ffmpeg_exe, "-y", "-i", wav_path, 
+                "-codec:a", "libmp3lame", "-b:a", "192k", 
+                mp3_path
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=120)
+            
+            # Read MP3 file and return it
+            with open(mp3_path, "rb") as mf:
+                mp3_data = mf.read()
+            return Response(content=mp3_data, media_type="audio/mpeg", headers={
+                "Content-Disposition": 'attachment; filename="mix.mp3"'
+            })
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=500, detail="MP3 conversion timed out")
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"FFmpeg error: {e.stderr.decode('utf-8', errors='replace')[:500]}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"MP3 Conversion failed: {str(e)}")
+
+if os.path.exists(FRONTEND_DIR):
+    # Serve static assets (JS, CSS, images)
+    assets_dir = os.path.join(FRONTEND_DIR, 'assets')
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    @app.get("/")
+    async def serve_frontend():
+        index_path = os.path.join(FRONTEND_DIR, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse(content={"message": "JagatAudio API is running"})
+    
+    @app.get("/{full_path:path}")
+    async def serve_frontend_fallback(full_path: str):
+        # Try to serve static file first
+        file_path = os.path.join(FRONTEND_DIR, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Fallback to index.html for SPA routing
+        index_path = os.path.join(FRONTEND_DIR, 'index.html')
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse(status_code=404, content={"message": "Not found"})
 
 
 if __name__ == "__main__":
