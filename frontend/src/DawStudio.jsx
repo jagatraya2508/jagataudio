@@ -1828,18 +1828,24 @@ function DawStudio({ token, apiBase = '', onClose }) {
         <div className="daw-transport-spacer" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <span style={{
             fontFamily: '"Outfit", "Inter", sans-serif',
-            fontSize: '1.4rem',
+            fontSize: '1.65rem',
             fontWeight: 800,
-            background: 'linear-gradient(135deg, #ffffff 0%, #f97316 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
+            color: '#ffffff',
             letterSpacing: '3px',
             textTransform: 'uppercase',
             userSelect: 'none',
             display: 'inline-block',
-            filter: 'drop-shadow(0 2px 8px rgba(249, 115, 22, 0.35))'
+            filter: 'drop-shadow(0 2px 8px rgba(131, 56, 236, 0.4))'
           }}>
-            JAGAT DAW
+            JAGAT{' '}
+            <span style={{
+              background: 'linear-gradient(135deg, #8338ec 0%, #ff477e 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              display: 'inline-block'
+            }}>
+              DAW
+            </span>
           </span>
         </div>
 

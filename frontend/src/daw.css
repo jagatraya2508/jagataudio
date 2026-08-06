@@ -13,8 +13,8 @@
   --daw-text:          #e0e4f0;
   --daw-text-dim:      #9ca3bf;
   --daw-text-bright:   #ffffff;
-  --daw-accent:        #cba6f7;
-  --daw-accent-2:      #5b9aff;
+  --daw-accent:        #8338ec;
+  --daw-accent-2:      #ff477e;
   --daw-playhead:      #ff3366;
   --daw-loop:          rgba(58,134,255,0.15);
   --daw-loop-border:   rgba(58,134,255,0.6);
@@ -131,12 +131,12 @@ body:has(.daw-studio) .background-glow {
 .daw-home-btn.primary {
   background: linear-gradient(135deg, var(--daw-accent), var(--daw-accent-2));
   color: #fff;
-  box-shadow: 0 4px 20px rgba(203,166,247,0.3);
+  box-shadow: 0 4px 20px rgba(131, 56, 236, 0.4);
 }
 
 .daw-home-btn.primary:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 28px rgba(203,166,247,0.45);
+  box-shadow: 0 6px 28px rgba(131, 56, 236, 0.6);
 }
 
 .daw-home-btn.secondary {
