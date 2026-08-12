@@ -33,7 +33,7 @@ if getattr(sys, 'frozen', False):
 
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -1995,6 +1995,98 @@ async def yt2mp3_download(job_id: str):
     download_name = f"{safe_title}.{ext}"
 
     return FileResponse(filepath, media_type=media_type, filename=download_name)
+
+
+class PreviewRequest(BaseModel):
+    url: str
+
+
+@app.post("/youtube-to-mp3/preview")
+async def yt2mp3_preview(req: PreviewRequest, current_user: dict = Depends(get_current_user)):
+    """Extract the best audio stream URL for preview playback."""
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL kosong")
+    try:
+        import yt_dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'bestaudio/best',
+            'skip_download': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            # Get the best audio stream URL
+            stream_url = None
+            if 'requested_formats' in info:
+                for fmt in info['requested_formats']:
+                    if fmt.get('acodec') != 'none':
+                        stream_url = fmt['url']
+                        break
+            if not stream_url:
+                stream_url = info.get('url')
+            if not stream_url and 'formats' in info:
+                # Pick best audio-only format
+                audio_fmts = [f for f in info['formats']
+                              if f.get('acodec') != 'none' and f.get('vcodec') in ('none', None)]
+                if not audio_fmts:
+                    audio_fmts = [f for f in info['formats'] if f.get('acodec') != 'none']
+                if audio_fmts:
+                    audio_fmts.sort(key=lambda f: f.get('abr') or f.get('tbr') or 0, reverse=True)
+                    stream_url = audio_fmts[0].get('url')
+            if not stream_url:
+                raise HTTPException(status_code=404, detail="Tidak dapat menemukan stream audio")
+            return {
+                "stream_url": stream_url,
+                "title": info.get('title', 'Unknown'),
+                "duration": info.get('duration'),
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil preview: {str(e)}")
+
+
+@app.get("/youtube-to-mp3/preview-stream")
+async def yt2mp3_preview_stream(url: str):
+    """Proxy audio stream to avoid CORS issues in the browser."""
+    if not url:
+        raise HTTPException(status_code=400, detail="URL kosong")
+    try:
+        import requests as http_requests
+        resp = http_requests.get(url, stream=True, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        resp.raise_for_status()
+
+        content_type = resp.headers.get('Content-Type', 'audio/mpeg')
+        content_length = resp.headers.get('Content-Length')
+
+        headers = {
+            'Content-Type': content_type,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+        }
+        if content_length:
+            headers['Content-Length'] = content_length
+
+        def stream_generator():
+            try:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                resp.close()
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type=content_type,
+            headers=headers
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stream error: {str(e)}")
+
 
 # --- Style Project Metadata Helpers ---
 

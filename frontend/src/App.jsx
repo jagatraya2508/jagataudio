@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle, Layers } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle, Layers, Shuffle, Repeat } from 'lucide-react';
 import DawStudio from './DawStudio';
 import './index.css';
 
@@ -692,6 +692,14 @@ function App() {
   const [yt2mp3Title, setYt2mp3Title] = useState('');
   const [yt2mp3MediaType, setYt2mp3MediaType] = useState('mp3'); // mp3 | mp4
 
+  // Preview/Test Play state
+  const [yt2mp3PreviewIdx, setYt2mp3PreviewIdx] = useState(-1); // index of result being previewed
+  const [yt2mp3PreviewLoading, setYt2mp3PreviewLoading] = useState(false);
+  const [yt2mp3PreviewPlaying, setYt2mp3PreviewPlaying] = useState(false);
+  const [yt2mp3PreviewTime, setYt2mp3PreviewTime] = useState(0);
+  const [yt2mp3PreviewDuration, setYt2mp3PreviewDuration] = useState(0);
+  const yt2mp3PreviewAudioRef = useRef(null);
+
   // MP3 folder playlist
   const [mp3Playlist, setMp3Playlist] = useState([]);
   const [mp3FolderName, setMp3FolderName] = useState('');
@@ -719,8 +727,11 @@ function App() {
   const [mp3SaveFeedback, setMp3SaveFeedback] = useState(null); // { type: 'loading'|'success'|'error', message }
   const [mp3SavingLyrics, setMp3SavingLyrics] = useState(false);
   const [mp3TrackLoading, setMp3TrackLoading] = useState(false);
+  const [mp3Shuffle, setMp3Shuffle] = useState(false);
+  const [mp3Repeat, setMp3Repeat] = useState('all'); // 'all' | 'one' | 'off'
   const mp3AudioRef = useRef(null);
   const mp3FolderInputRef = useRef(null);
+  const mp3FileInputRef = useRef(null);
   const mp3PlaylistUrlsRef = useRef([]);
   const mp3ActiveLyricRef = useRef(null);
   const mp3LyricSyncRef = useRef({ activeIndex: -1, progress: 0, activeWordIndex: -1, wordProgress: 0 });
@@ -1594,6 +1605,46 @@ function App() {
     e.target.value = '';
   };
 
+  const pickMp3Files = async () => {
+    if ('showOpenFilePicker' in window) {
+      try {
+        const handles = await window.showOpenFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: 'File Media Audio & Video',
+              accept: {
+                'audio/*': ['.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac', '.webm'],
+                'video/*': ['.mp4', '.webm']
+              }
+            }
+          ]
+        });
+        if (!handles || handles.length === 0) return;
+        const files = await Promise.all(handles.map((h) => h.getFile()));
+        const label = files.length === 1 ? files[0].name : `${files.length} File Media`;
+        mp3FolderHandleRef.current = null;
+        setMp3FolderWritable(false);
+        await loadPlaylistFromFiles(files, label, null);
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+        console.error('showOpenFilePicker error:', e);
+      }
+    }
+    mp3FileInputRef.current?.click();
+  };
+
+  const handleMp3FileSelect = async (e) => {
+    const allFiles = Array.from(e.target.files || []);
+    if (allFiles.length === 0) return;
+    const label = allFiles.length === 1 ? allFiles[0].name : `${allFiles.length} File Media`;
+    mp3FolderHandleRef.current = null;
+    setMp3FolderWritable(false);
+    await loadPlaylistFromFiles(allFiles, label, null);
+    e.target.value = '';
+  };
+
   useEffect(() => {
     mp3ActiveLyricRef.current?.scrollIntoView({ behavior: 'auto', block: 'center' });
   }, [mp3ActiveLyricIndex, mp3CurrentIndex]);
@@ -1868,8 +1919,21 @@ function App() {
 
   const playMp3Next = () => {
     if (mp3Playlist.length === 0) return;
-    const next = mp3CurrentIndex < mp3Playlist.length - 1 ? mp3CurrentIndex + 1 : 0;
-    playMp3Track(next);
+    if (mp3Repeat === 'one' && mp3CurrentIndex >= 0) {
+      playMp3Track(mp3CurrentIndex);
+      return;
+    }
+    if (mp3Shuffle && mp3Playlist.length > 1) {
+      let nextIdx;
+      do {
+        nextIdx = Math.floor(Math.random() * mp3Playlist.length);
+      } while (nextIdx === mp3CurrentIndex && mp3Playlist.length > 1);
+      playMp3Track(nextIdx);
+      return;
+    }
+    const next = mp3CurrentIndex < mp3Playlist.length - 1 ? mp3CurrentIndex + 1 : (mp3Repeat === 'off' ? -1 : 0);
+    if (next >= 0) playMp3Track(next);
+    else setMp3IsPlaying(false);
   };
 
   const playMp3Prev = () => {
@@ -1879,6 +1943,14 @@ function App() {
       if (mp3PitchPlayerRef.current) {
         syncMp3PitchPlayerToMedia(!mp3AudioRef.current.paused);
       }
+      return;
+    }
+    if (mp3Shuffle && mp3Playlist.length > 1) {
+      let prevIdx;
+      do {
+        prevIdx = Math.floor(Math.random() * mp3Playlist.length);
+      } while (prevIdx === mp3CurrentIndex && mp3Playlist.length > 1);
+      playMp3Track(prevIdx);
       return;
     }
     const prev = mp3CurrentIndex > 0 ? mp3CurrentIndex - 1 : mp3Playlist.length - 1;
@@ -2420,6 +2492,93 @@ function App() {
     }
     return () => clearInterval(interval);
   }, [yt2mp3Status, yt2mp3JobId]);
+
+  // Preview/Test Play handler
+  const yt2mp3PreviewUrlRef = useRef(''); // cache the proxy URL for resume
+  const handlePreviewPlay = useCallback(async (idx) => {
+    const audio = yt2mp3PreviewAudioRef.current;
+    if (!audio) return;
+
+    // If same item clicked while playing → pause
+    if (yt2mp3PreviewIdx === idx && yt2mp3PreviewPlaying) {
+      audio.pause();
+      setYt2mp3PreviewPlaying(false);
+      return;
+    }
+    // If same item clicked while paused → resume
+    if (yt2mp3PreviewIdx === idx && !yt2mp3PreviewPlaying && yt2mp3PreviewUrlRef.current) {
+      // If audio ended or currentTime is near end, restart from beginning
+      if (audio.ended || (audio.duration && audio.currentTime >= audio.duration - 0.5)) {
+        audio.currentTime = 0;
+      }
+      try {
+        await audio.play();
+        setYt2mp3PreviewPlaying(true);
+      } catch {
+        // Stream may have expired — reload from cached URL
+        audio.src = yt2mp3PreviewUrlRef.current;
+        audio.load();
+        try {
+          await audio.play();
+          setYt2mp3PreviewPlaying(true);
+        } catch (e2) {
+          console.error('Preview resume failed:', e2);
+        }
+      }
+      return;
+    }
+
+    // New item: stop current, fetch stream, play
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+    yt2mp3PreviewUrlRef.current = '';
+    setYt2mp3PreviewIdx(idx);
+    setYt2mp3PreviewLoading(true);
+    setYt2mp3PreviewPlaying(false);
+    setYt2mp3PreviewTime(0);
+    setYt2mp3PreviewDuration(0);
+
+    const result = yt2mp3SearchResults[idx];
+    if (!result) { setYt2mp3PreviewLoading(false); return; }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ url: result.url })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error('Preview error:', err.detail);
+        setYt2mp3PreviewLoading(false);
+        return;
+      }
+      const data = await res.json();
+      // Use proxy stream to avoid CORS
+      const proxyUrl = `${API_BASE_URL}/youtube-to-mp3/preview-stream?url=${encodeURIComponent(data.stream_url)}`;
+      yt2mp3PreviewUrlRef.current = proxyUrl;
+      audio.src = proxyUrl;
+      audio.load();
+      await audio.play();
+      setYt2mp3PreviewPlaying(true);
+    } catch (e) {
+      console.error('Preview play error:', e);
+    }
+    setYt2mp3PreviewLoading(false);
+  }, [yt2mp3PreviewIdx, yt2mp3PreviewPlaying, yt2mp3SearchResults, token]);
+
+  // Stop preview when status changes (e.g. user starts downloading)
+  useEffect(() => {
+    const audio = yt2mp3PreviewAudioRef.current;
+    if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
+    yt2mp3PreviewUrlRef.current = '';
+    setYt2mp3PreviewIdx(-1);
+    setYt2mp3PreviewPlaying(false);
+    setYt2mp3PreviewTime(0);
+    setYt2mp3PreviewDuration(0);
+  }, [yt2mp3Status]);
+
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
@@ -6457,40 +6616,163 @@ function App() {
                 {yt2mp3SearchResults.length > 0 && (
                   <div className="search-results-container" style={{ marginTop: '1.5rem', textAlign: 'left' }}>
                     <h4 style={{ marginBottom: '1rem', color: '#fff' }}>Hasil Pencarian:</h4>
+                    {/* Hidden audio element for preview */}
+                    <audio
+                      ref={yt2mp3PreviewAudioRef}
+                      preload="auto"
+                      onTimeUpdate={(e) => setYt2mp3PreviewTime(e.target.currentTime)}
+                      onLoadedMetadata={(e) => setYt2mp3PreviewDuration(e.target.duration)}
+                      onEnded={(e) => { e.target.currentTime = 0; setYt2mp3PreviewPlaying(false); setYt2mp3PreviewTime(0); }}
+                      onError={() => { setYt2mp3PreviewPlaying(false); setYt2mp3PreviewLoading(false); }}
+                      style={{ display: 'none' }}
+                    />
                     <div className="search-results-list" style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                      {yt2mp3SearchResults.map((result, idx) => (
-                        <div key={idx} className="search-result-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.05)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                          <div className="result-info" style={{ flex: 1, marginRight: '1rem', overflow: 'hidden' }}>
-                            <div style={{ fontWeight: 'bold', color: '#fff', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{result.title}</div>
-                            <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)', marginTop: '4px', display: 'flex', gap: '1rem' }}>
-                              <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }}/> {result.duration ? Math.floor(result.duration / 60) + ':' + (result.duration % 60).toString().padStart(2, '0') : '--:--'}</span>
-                              <span style={{ color: result.source === 'SoundCloud' ? '#ff9f1c' : '#ff477e' }}>{result.source}</span>
+                      {yt2mp3SearchResults.map((result, idx) => {
+                        const isActive = yt2mp3PreviewIdx === idx;
+                        const isPlaying = isActive && yt2mp3PreviewPlaying;
+                        const isLoading = isActive && yt2mp3PreviewLoading;
+                        const progress = isActive && yt2mp3PreviewDuration > 0
+                          ? (yt2mp3PreviewTime / yt2mp3PreviewDuration) * 100
+                          : 0;
+                        const fmtTime = (t) => {
+                          if (!t || !isFinite(t)) return '0:00';
+                          const m = Math.floor(t / 60);
+                          const s = Math.floor(t % 60);
+                          return `${m}:${s.toString().padStart(2, '0')}`;
+                        };
+                        return (
+                        <div key={idx} className={`search-result-item${isActive ? ' preview-active' : ''}`}>
+                          {/* Top row: play button + info + download */}
+                          <div className="search-result-top-row">
+                            {/* Preview Play Button */}
+                            <button
+                              className={`preview-play-btn${isLoading ? ' loading' : ''}${isPlaying ? ' playing' : ''}`}
+                              onClick={() => handlePreviewPlay(idx)}
+                              title={isPlaying ? 'Pause Preview' : 'Test Play'}
+                              disabled={isLoading}
+                            >
+                              {isLoading ? (
+                                <Loader2 size={20} className="spinner" />
+                              ) : isPlaying ? (
+                                <Pause size={20} />
+                              ) : (
+                                <Play size={20} style={{ marginLeft: '2px' }} />
+                              )}
+                            </button>
+                            <div className="result-info" style={{ flex: 1, marginLeft: '0.8rem', marginRight: '0.8rem', overflow: 'hidden' }}>
+                              <div style={{ fontWeight: 'bold', color: '#fff', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{result.title}</div>
+                              <div style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.6)', marginTop: '4px', display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                                <span><Clock size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }}/> {result.duration ? Math.floor(result.duration / 60) + ':' + (result.duration % 60).toString().padStart(2, '0') : '--:--'}</span>
+                                <span style={{ color: result.source === 'SoundCloud' ? '#ff9f1c' : '#ff477e' }}>{result.source}</span>
+                              </div>
                             </div>
+                            <button className="process-btn" style={{ flexShrink: 0, width: 'auto', minWidth: '90px', padding: '0.5rem 1rem', fontSize: '0.9rem', display: 'flex', justifyContent: 'center', alignItems: 'center' }} onClick={async () => {
+                              // Stop preview if playing
+                              if (yt2mp3PreviewAudioRef.current) { yt2mp3PreviewAudioRef.current.pause(); yt2mp3PreviewAudioRef.current.removeAttribute('src'); yt2mp3PreviewAudioRef.current.load(); }
+                              yt2mp3PreviewUrlRef.current = '';
+                              setYt2mp3PreviewPlaying(false);
+                              setYt2mp3PreviewIdx(-1);
+                              setYt2mp3Status('preparing');
+                              setYt2mp3Error('');
+                              setYt2mp3Progress(0);
+                              try {
+                                const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/prepare`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                  body: JSON.stringify({ url: result.url, media_type: yt2mp3MediaType })
+                                });
+                                const data = await res.json();
+                                if(res.ok) {
+                                  setYt2mp3JobId(data.job_id);
+                                  if (data.media_type) setYt2mp3MediaType(data.media_type);
+                                  setYt2mp3Status('downloading');
+                                } else {
+                                  setYt2mp3Status('error'); setYt2mp3Error(data.detail || 'Gagal memproses');
+                                }
+                              } catch(e) { setYt2mp3Status('error'); setYt2mp3Error('Kesalahan jaringan'); }
+                            }}>
+                              <Download size={16} style={{ marginRight: '4px' }} /> Unduh {yt2mp3MediaType === 'mp4' ? 'MP4' : 'MP3'}
+                            </button>
                           </div>
-                          <button className="process-btn" style={{ flexShrink: 0, width: 'auto', minWidth: '90px', padding: '0.5rem 1rem', fontSize: '0.9rem', display: 'flex', justifyContent: 'center', alignItems: 'center' }} onClick={async () => {
-                            setYt2mp3Status('preparing');
-                            setYt2mp3Error('');
-                            setYt2mp3Progress(0);
-                            try {
-                              const res = await fetch(`${API_BASE_URL}/youtube-to-mp3/prepare`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                                body: JSON.stringify({ url: result.url, media_type: yt2mp3MediaType })
-                              });
-                              const data = await res.json();
-                              if(res.ok) {
-                                setYt2mp3JobId(data.job_id);
-                                if (data.media_type) setYt2mp3MediaType(data.media_type);
-                                setYt2mp3Status('downloading');
-                              } else {
-                                setYt2mp3Status('error'); setYt2mp3Error(data.detail || 'Gagal memproses');
-                              }
-                            } catch(e) { setYt2mp3Status('error'); setYt2mp3Error('Kesalahan jaringan'); }
-                          }}>
-                            <Download size={16} style={{ marginRight: '4px' }} /> Unduh {yt2mp3MediaType === 'mp4' ? 'MP4' : 'MP3'}
-                          </button>
+                          {/* Expanded player controls when active */}
+                          {isActive && (yt2mp3PreviewUrlRef.current || isLoading) && (
+                            <div className="preview-player-controls">
+                              {/* Seekable progress bar */}
+                              <div
+                                className="preview-seekbar"
+                                onClick={(e) => {
+                                  const audio = yt2mp3PreviewAudioRef.current;
+                                  if (!audio || !yt2mp3PreviewDuration) return;
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                                  audio.currentTime = pct * yt2mp3PreviewDuration;
+                                  setYt2mp3PreviewTime(audio.currentTime);
+                                }}
+                                title="Klik untuk geser posisi"
+                              >
+                                <div className="preview-seekbar-fill" style={{ width: `${progress}%` }}>
+                                  <div className="preview-seekbar-thumb" />
+                                </div>
+                              </div>
+                              {/* Time + Controls row */}
+                              <div className="preview-controls-row">
+                                <span className="preview-time">{fmtTime(yt2mp3PreviewTime)}</span>
+                                <div className="preview-btns-group">
+                                  {/* Back to start */}
+                                  <button
+                                    className="preview-ctrl-btn"
+                                    title="Kembali ke awal"
+                                    onClick={() => {
+                                      const audio = yt2mp3PreviewAudioRef.current;
+                                      if (audio) { audio.currentTime = 0; setYt2mp3PreviewTime(0); }
+                                    }}
+                                  >
+                                    <RotateCcw size={15} />
+                                  </button>
+                                  {/* Skip back 10s */}
+                                  <button
+                                    className="preview-ctrl-btn"
+                                    title="Mundur 10 detik"
+                                    onClick={() => {
+                                      const audio = yt2mp3PreviewAudioRef.current;
+                                      if (audio) { audio.currentTime = Math.max(0, audio.currentTime - 10); setYt2mp3PreviewTime(audio.currentTime); }
+                                    }}
+                                  >
+                                    <SkipBack size={15} />
+                                  </button>
+                                  {/* Play/Pause center */}
+                                  <button
+                                    className={`preview-ctrl-btn center${isPlaying ? ' playing' : ''}`}
+                                    onClick={() => handlePreviewPlay(idx)}
+                                    disabled={isLoading}
+                                  >
+                                    {isLoading ? (
+                                      <Loader2 size={16} className="spinner" />
+                                    ) : isPlaying ? (
+                                      <Pause size={16} />
+                                    ) : (
+                                      <Play size={16} style={{ marginLeft: '1px' }} />
+                                    )}
+                                  </button>
+                                  {/* Skip forward 10s */}
+                                  <button
+                                    className="preview-ctrl-btn"
+                                    title="Maju 10 detik"
+                                    onClick={() => {
+                                      const audio = yt2mp3PreviewAudioRef.current;
+                                      if (audio && yt2mp3PreviewDuration) { audio.currentTime = Math.min(yt2mp3PreviewDuration, audio.currentTime + 10); setYt2mp3PreviewTime(audio.currentTime); }
+                                    }}
+                                  >
+                                    <SkipForward size={15} />
+                                  </button>
+                                </div>
+                                <span className="preview-time">{fmtTime(yt2mp3PreviewDuration)}</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -6790,9 +7072,9 @@ function App() {
               </div>
 
               <div className="mp3-folder-info glass-panel">
-                <p><strong>Catatan:</strong> Bisa pilih <em>folder mana saja</em> yang berisi file media (MP3/MP4/dll), termasuk <code>Downloads</code>.</p>
-                <p>Saat dialog terbuka, Windows/Chrome <em>sering tidak menampilkan daftar file</em> — itu normal. Masuk ke folder yang diinginkan, lalu klik <strong>Select Folder</strong>.</p>
-                <p>Subfolder ikut dipindai. Jika file masih di cloud (OneDrive) dan belum diunduh, mungkin tidak terbaca.</p>
+                <p><strong>💡 2 Cara Memilih Media:</strong></p>
+                <p>• <strong>Pilih 1 Folder Penuh:</strong> Memindai seluruh folder beserta subfolder. <em>(Saat dialog terbuka Windows menyembunyikan file di dalamnya, itu normal — cukup klik Select Folder).</em></p>
+                <p>• <strong>Pilih File Media:</strong> Menampilkan daftar file langsung di dialog Windows. Anda bisa memilih <strong>1 lagu</strong>, menahan <strong>Ctrl</strong> untuk memilih <strong>beberapa lagu acak</strong>, atau menahan <strong>Shift</strong> untuk memilih <strong>rentang lagu (from song to song)</strong>.</p>
               </div>
 
               <input
@@ -6804,9 +7086,21 @@ function App() {
                 onChange={handleMp3FolderSelect}
               />
 
+              <input
+                ref={mp3FileInputRef}
+                type="file"
+                multiple
+                accept="audio/*,video/*,.mp3,.mp4,.m4a,.wav,.ogg,.flac,.aac,.webm"
+                hidden
+                onChange={handleMp3FileSelect}
+              />
+
               <div className="mp3-playlist-actions">
-                <button className="process-btn" onClick={pickMp3Folder}>
-                  <FolderOpen size={18} /> Pilih Folder Media
+                <button className="process-btn" onClick={pickMp3Folder} title="Pilih 1 folder penuh untuk dimasukkan ke playlist">
+                  <FolderOpen size={18} /> Pilih 1 Folder Penuh
+                </button>
+                <button className="process-btn secondary-brand" onClick={pickMp3Files} title="Pilih 1 lagu, beberapa lagu acak (Ctrl), atau rentang lagu (Shift)">
+                  <Music size={18} /> Pilih File Media (1 / Acak / Rentang)
                 </button>
                 {mp3Playlist.length > 0 && (
                   <button className="cancel-btn" onClick={clearMp3Playlist}>
@@ -6873,6 +7167,14 @@ function App() {
                     />
 
                     <div className="mp3-player-controls">
+                      <button
+                        type="button"
+                        className={`mp3-nav-btn ${mp3Shuffle ? 'active-toggle' : ''}`}
+                        onClick={() => setMp3Shuffle(!mp3Shuffle)}
+                        title={mp3Shuffle ? 'Mode Acak / Shuffle: AKTIF' : 'Mode Acak / Shuffle: NONAKTIF'}
+                      >
+                        <Shuffle size={18} />
+                      </button>
                       <button className="mp3-nav-btn" onClick={playMp3Prev} title="Sebelumnya">
                         <SkipBack size={20} />
                       </button>
@@ -6881,6 +7183,18 @@ function App() {
                       </button>
                       <button className="mp3-nav-btn" onClick={playMp3Next} title="Berikutnya">
                         <SkipForward size={20} />
+                      </button>
+                      <button
+                        type="button"
+                        className={`mp3-nav-btn ${mp3Repeat !== 'off' ? 'active-toggle' : ''}`}
+                        style={{ position: 'relative' }}
+                        onClick={() => setMp3Repeat(r => r === 'all' ? 'one' : r === 'one' ? 'off' : 'all')}
+                        title={`Mode Ulang: ${mp3Repeat === 'all' ? 'Ulang Semua' : mp3Repeat === 'one' ? 'Ulang 1 Lagu Ini Saja' : 'Mati (Berhenti di Akhir)'}`}
+                      >
+                        <Repeat size={18} />
+                        {mp3Repeat === 'one' && (
+                          <span style={{ position: 'absolute', bottom: '3px', right: '5px', fontSize: '9px', fontWeight: 800, lineHeight: 1 }}>1</span>
+                        )}
                       </button>
                       <div className="mp3-now-playing">
                         {mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : 'Pilih lagu untuk diputar'}

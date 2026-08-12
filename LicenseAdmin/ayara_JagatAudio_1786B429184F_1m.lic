@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "1786-B429-184F-EF75-7BE1-4213-9C7B-5E05",
+    "license_type": "1m",
+    "customer_name": "ayara",
+    "issued_date": "2026-08-08T02:57:39.414951",
+    "expiry_date": "2026-09-07T02:57:39.414951",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "F80nYgkMyShlOtt6KRffZhal5jey1lYM4jlsU6UWTuVtxWPMCNUdadoXV3fvfsHsQrgX0mZ3E2uZhdX6rXfHS1ZJlkskD3Z9rZdslE9ypdcSYKKZ89qeqmC/2eGptdXZJUnUnt2Mnt9uEeJv0uv19TNlV2rzbQlVMAPSMNNk0eatkpsWePVcytLhCJtsTTEUkQ2Bb2mOAZ2xWKK67TIAwZszm/4Xk3E+NwxM92a+uQ5MH1ZEdh98Efh1qNf6kHTCXbY/airtqd3BVT+w0WbkoEydPJC0Xk0qvPRpej4IzvlN087jVmHzs1Jn3IK2b9m4jp8NGtFnmJdBVfxQsTuPpg=="
+}

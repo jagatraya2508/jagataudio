@@ -14,19 +14,22 @@ import {
   Music, Repeat, ChevronUp, ChevronDown,
   Scissors, MousePointer2, Eraser, ZoomIn, ZoomOut,
   Undo2, Redo2, Loader2, Copy, ArrowLeft,
-  Layers, Bell, Drum,
+  Layers, Bell, Drum, Sparkles, ShieldAlert, Radio,
+  Activity, SlidersHorizontal, Maximize2, Minimize2,
+  Gauge, Zap, Check, RotateCcw, VolumeX, Flame, Headphones, RefreshCw,
 } from 'lucide-react';
 import { generateDrumLoop, DRUM_PRESETS } from './DrumGenerator';
 import { generateBassLoop } from './BassGenerator';
+import { TRACK_MIXING_PRESETS, MASTERING_PRESETS } from './mixingPresets';
 import * as Tone from 'tone';
 import './daw.css';
 
 // ─── Constants ───────────────────────────────────────────────────
 
 const RULER_HEIGHT      = 32;
-const DEFAULT_TRACK_H   = 100;
-const MIN_TRACK_H       = 100;
-const MAX_TRACK_H       = 200;
+const DEFAULT_TRACK_H   = 148;
+const MIN_TRACK_H       = 130;
+const MAX_TRACK_H       = 240;
 const MIN_ZOOM          = 1;    // px per second
 const MAX_ZOOM          = 400;
 const DEFAULT_ZOOM      = 20;
@@ -82,9 +85,13 @@ function snapTime(time, bpm, timeSig, snapValue) {
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 function hexToRgba(hex, alpha) {
+  if (!hex || typeof hex !== 'string' || hex.length < 7) {
+    return `rgba(58,134,255,${alpha})`;
+  }
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
+  if ([r, g, b].some(n => Number.isNaN(n))) return `rgba(58,134,255,${alpha})`;
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
@@ -98,13 +105,18 @@ function createDefaultTrack(index) {
     mute: false,
     solo: false,
     armed: false,
+    monitor: true,
     inputId: 'default',
     regions: [],
     effects: {
+      gate:       { enabled: false, threshold: -45 },
+      lowCut:     { enabled: false, frequency: 80 },
+      saturation: { enabled: false, drive: 0.25, warmth: 0.6 },
       guitar:     { enabled: false, mode: 'clean', drive: 0.5 },
       eq:         { low: 0, mid: 0, high: 0 },
-      compressor: { enabled: false, threshold: -24, ratio: 4, attack: 0.003, release: 0.25 },
-      reverb:     { enabled: false, wet: 0.3, decay: 1.5 },
+      compressor: { enabled: false, threshold: -20, ratio: 4, attack: 0.005, release: 0.2 },
+      chorus:     { enabled: false, wet: 0.35, depth: 0.6, rate: 1.5 },
+      reverb:     { enabled: false, wet: 0.25, decay: 1.8 },
       delay:      { enabled: false, wet: 0.2, feedback: 0.3 },
     },
   };
@@ -134,7 +146,7 @@ function RotaryKnob({ value, min, max, step = 0.01, onChange, onChangeEnd, label
 
   // Arc geometry
   const cx = size / 2, cy = size / 2;
-  const r = size / 2 - 5;
+  const r = size / 2 - 4.5;
   const startAngle = 225;  // degrees from top, clockwise
   const endAngle = -45;
   const totalSweep = 270;  // degrees
@@ -155,7 +167,7 @@ function RotaryKnob({ value, min, max, step = 0.01, onChange, onChangeEnd, label
   };
 
   const valueAngle = startAngle - normalised * totalSweep;
-  const indicatorR = r - 3;
+  const indicatorR = r - 2.5;
   const indEnd = {
     x: cx + indicatorR * Math.cos(angleRad(valueAngle)),
     y: cy + indicatorR * Math.sin(angleRad(valueAngle)),
@@ -191,14 +203,20 @@ function RotaryKnob({ value, min, max, step = 0.01, onChange, onChangeEnd, label
   return (
     <div className="daw-knob-group">
       {label && <span className="daw-knob-label">{label}</span>}
-      <div className="daw-knob-wrapper" style={{ width: size, height: size }} onMouseDown={handleMouseDown} ref={ref}>
+      <div className="daw-knob-wrapper" style={{ width: size, height: size }} onMouseDown={handleMouseDown} ref={ref} title={`${label || 'Knob'}: ${displayValue}`}>
         <svg className="daw-knob-svg" viewBox={`0 0 ${size} ${size}`}>
           {/* Track arc */}
           <path d={describeArc(startAngle, endAngle)} className="daw-knob-track-arc" />
           {/* Value arc */}
           <path d={describeArc(startAngle, valueAngle)} className="daw-knob-value-arc" style={{ stroke: color }} />
-          {/* Knob body */}
-          <circle cx={cx} cy={cy} r={r - 4} className="daw-knob-body" />
+          {/* Center detent / center notch indicator for Pan */}
+          {min < 0 && max > 0 && (
+            <circle cx={cx} cy={cy - r} r={0.8} fill="rgba(255,255,255,0.4)" />
+          )}
+          {/* Knob Outer Bevel */}
+          <circle cx={cx} cy={cy} r={r - 2} fill="#181a2e" stroke="rgba(255,255,255,0.12)" strokeWidth="0.75" />
+          {/* Knob Inner Body */}
+          <circle cx={cx} cy={cy} r={r - 3.5} className="daw-knob-body" />
           {/* Indicator line */}
           <line x1={indStart.x} y1={indStart.y} x2={indEnd.x} y2={indEnd.y} className="daw-knob-indicator" />
         </svg>
@@ -254,6 +272,8 @@ function DawStudio({ token, apiBase = '', onClose }) {
 
   // Inputs
   const [audioInputDevices, setAudioInputDevices] = useState([]);
+  const [inputMeterLevels, setInputMeterLevels] = useState({});
+  const [inputPermissionError, setInputPermissionError] = useState(null);
 
   // Undo / Redo
   const [history, setHistory]           = useState([]);
@@ -271,7 +291,18 @@ function DawStudio({ token, apiBase = '', onClose }) {
   const [contextMenu, setContextMenu]   = useState(null);
   const [trackContextMenu, setTrackContextMenu] = useState(null);
   const [pendingDropFiles, setPendingDropFiles] = useState(null); // { files: File[], time: number }
-  const [headersWidth, setHeadersWidth] = useState(220);
+  const [headersWidth, setHeadersWidth] = useState(250);
+
+  // Full Mastering Suite State
+  const [masterSuite, setMasterSuite] = useState({
+    eq: { low: 0, mid: 0, high: 0, subCut: true },
+    compressor: { enabled: false, threshold: -14, ratio: 2.5, attack: 0.03, release: 0.2 },
+    width: 1.0,
+    isMono: false,
+    limiter: { enabled: true, ceiling: -0.5 },
+  });
+  const [showMasterModal, setShowMasterModal] = useState(false);
+  const [activeFxTab, setActiveFxTab] = useState('tone'); // 'prep', 'tone', 'dynamics', 'space'
 
   // Drum Generator State
   const [showDrumModal, setShowDrumModal] = useState(false);
@@ -324,13 +355,14 @@ function DawStudio({ token, apiBase = '', onClose }) {
   useEffect(() => {
     async function fetchDevices() {
       try {
-        // Request permission to get device labels
         await navigator.mediaDevices.getUserMedia({ audio: true });
         const devices = await navigator.mediaDevices.enumerateDevices();
         const inputs = devices.filter(d => d.kind === 'audioinput');
         setAudioInputDevices(inputs);
+        setInputPermissionError(null);
       } catch (err) {
         console.error('Failed to enumerate devices or get permission:', err);
+        setInputPermissionError('Izin mikrofon/soundcard ditolak. Izinkan akses di browser, lalu refresh.');
       }
     }
     fetchDevices();
@@ -351,26 +383,29 @@ function DawStudio({ token, apiBase = '', onClose }) {
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
-    // Ensure every track has a node (skips if engine not initialized yet)
-    for (const t of tracks) {
-      if (!engine.trackNodes.has(t.id)) engine.createTrackNode(t.id);
-      if (engine.trackNodes.has(t.id)) {
-        engine.setTrackVolume(t.id, t.volume);
-        engine.setTrackPan(t.id, t.pan);
-        engine.setTrackMute(t.id, t.mute);
-        engine.setTrackEffects(t.id, t.effects);
+    try {
+      for (const t of tracks) {
+        if (!engine.trackNodes.has(t.id)) engine.createTrackNode(t.id);
+        if (engine.trackNodes.has(t.id)) {
+          engine.setTrackVolume(t.id, t.volume);
+          engine.setTrackPan(t.id, t.pan);
+          engine.setTrackMute(t.id, t.mute);
+          engine.setTrackEffects(t.id, t.effects);
+        }
       }
-    }
-    engine.updateSoloState(tracks);
-    // Remove orphaned nodes
-    for (const id of engine.trackNodes.keys()) {
-      if (!tracks.find(t => t.id === id)) engine.removeTrackNode(id);
+      engine.updateSoloState(tracks);
+      for (const id of engine.trackNodes.keys()) {
+        if (!tracks.find(t => t.id === id)) engine.removeTrackNode(id);
+      }
+    } catch (err) {
+      console.error('Track sync error:', err);
     }
   }, [tracks]);
 
-  // Sync master
+  // Sync master & mastering suite
   useEffect(() => { engineRef.current?.setMasterVolume(masterVol); }, [masterVol]);
   useEffect(() => { engineRef.current?.setMasterLimiter(limiterOn); }, [limiterOn]);
+  useEffect(() => { engineRef.current?.setMasterSuite(masterSuite); }, [masterSuite]);
   useEffect(() => { engineRef.current?.setMetronomeEnabled(metronomeOn, bpm); }, [metronomeOn, bpm]);
 
   // ============ UNDO / REDO ============
@@ -396,6 +431,30 @@ function DawStudio({ token, apiBase = '', onClose }) {
     const next = history[historyIdx + 1];
     if (next) { setTracks(JSON.parse(JSON.stringify(next))); setHistoryIdx(i => i + 1); }
   }, [history, historyIdx]);
+
+  // ============ AUTO-GAIN STAGING ============
+
+  const handleAutoGainStaging = useCallback(() => {
+    if (!tracks || tracks.length === 0) return;
+    const headroomOffset = tracks.length > 8 ? -4.0 : (tracks.length > 4 ? -2.0 : 0);
+    const updated = tracks.map((t) => {
+      let targetVol = 0 + headroomOffset;
+      const lowerName = (t.name || '').toLowerCase();
+      if (lowerName.includes('kick') || lowerName.includes('bass')) {
+        targetVol = -2.5 + headroomOffset;
+      } else if (lowerName.includes('snare') || lowerName.includes('vocal') || lowerName.includes('lead')) {
+        targetVol = -1.5 + headroomOffset;
+      } else if (lowerName.includes('hat') || lowerName.includes('perk') || lowerName.includes('shaker')) {
+        targetVol = -5.0 + headroomOffset;
+      } else if (lowerName.includes('pad') || lowerName.includes('synth') || lowerName.includes('reverb')) {
+        targetVol = -6.0 + headroomOffset;
+      }
+      return { ...t, volume: Math.round(targetVol * 2) / 2 };
+    });
+    setTracks(updated);
+    pushUndo(updated);
+    showToast('⚡ Auto-Gain Staging Diterapkan! Level fader seimbang & headroom aman.', 'success');
+  }, [tracks, pushUndo, showToast]);
 
   // ============ TRACK MANAGEMENT ============
 
@@ -448,6 +507,82 @@ function DawStudio({ token, apiBase = '', onClose }) {
     });
   }, [pushUndo]);
 
+  const refreshAudioInputs = useCallback(async () => {
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'audioinput');
+      setAudioInputDevices(inputs);
+      setInputPermissionError(null);
+      showToast(inputs.length ? `${inputs.length} input soundcard terdeteksi` : 'Tidak ada input audio', 'info');
+    } catch (err) {
+      setInputPermissionError('Gagal akses soundcard. Cek izin browser & kabel USB.');
+      showToast('Gagal akses input audio', 'error');
+    }
+  }, [showToast]);
+
+  const armTrack = useCallback(async (trackId) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const track = tracksRef.current.find(t => t.id === trackId);
+    if (!track) return;
+
+    const nextArmed = !track.armed;
+    if (!nextArmed) {
+      engine.stopInputMonitor(trackId);
+      updateTrack(trackId, { armed: false });
+      showToast('Track disarm — input ditutup', 'info');
+      return;
+    }
+
+    try {
+      await engine.init();
+      if (!engine.trackNodes.has(trackId)) engine.createTrackNode(trackId);
+      await engine.startInputMonitor(trackId, track.inputId || 'default');
+      engine.setInputMonitorAudible(trackId, track.monitor !== false);
+      engine.setTrackVolume(trackId, track.volume);
+      engine.setTrackPan(trackId, track.pan);
+      engine.setTrackEffects(trackId, track.effects);
+      updateTrack(trackId, { armed: true, monitor: track.monitor !== false });
+      showToast(
+        'Track armed ✓ Mainkan alat musik. Monitor (🎧) untuk mendengar, lalu tekan Record.',
+        'success'
+      );
+    } catch (err) {
+      console.error(err);
+      engine.stopInputMonitor(trackId);
+      updateTrack(trackId, { armed: false });
+      showToast('Gagal buka input. Pilih soundcard yang benar & izinkan akses mic.', 'error');
+    }
+  }, [updateTrack, showToast]);
+
+  const setTrackInputDevice = useCallback(async (trackId, inputId) => {
+    updateTrack(trackId, { inputId });
+    const track = tracksRef.current.find(t => t.id === trackId);
+    const engine = engineRef.current;
+    if (!engine || !track?.armed) return;
+    try {
+      await engine.startInputMonitor(trackId, inputId);
+      engine.setInputMonitorAudible(trackId, track.monitor !== false);
+      showToast('Input diganti — monitor aktif ulang', 'info');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal ganti input device', 'error');
+    }
+  }, [updateTrack, showToast]);
+
+  const toggleTrackMonitor = useCallback((trackId) => {
+    const track = tracksRef.current.find(t => t.id === trackId);
+    if (!track) return;
+    const next = !(track.monitor !== false);
+    updateTrack(trackId, { monitor: next });
+    engineRef.current?.setInputMonitorAudible(trackId, next);
+    showToast(next
+      ? 'Monitor ON — alat musik terdengar di speaker/headphone'
+      : 'Monitor OFF — tetap bisa rekam (hindari feedback mic)',
+    'info');
+  }, [updateTrack, showToast]);
+
   // ============ AUDIO IMPORT ============
 
   const importAudioFiles = useCallback(async (files, targetTrackId, dropTime = 0) => {
@@ -481,7 +616,9 @@ function DawStudio({ token, apiBase = '', onClose }) {
             trackId = prev[0].id;
           }
           const t = prev.map(t => {
-            if (t.id === trackId) return { ...t, regions: [...t.regions, region] };
+            if (t.id === trackId) {
+              return { ...t, regions: [...(t.regions || []), region] };
+            }
             return t;
           });
           pushUndo(t);
@@ -502,11 +639,23 @@ function DawStudio({ token, apiBase = '', onClose }) {
     const engine = engineRef.current;
     if (!engine) return;
     await engine.init();
+    // Ensure track nodes exist (they may have failed to create before init)
+    const currentTracks = tracksRef.current;
+    for (const t of currentTracks) {
+      if (!engine.trackNodes.has(t.id)) engine.createTrackNode(t.id);
+      if (engine.trackNodes.has(t.id)) {
+        engine.setTrackVolume(t.id, t.volume);
+        engine.setTrackPan(t.id, t.pan);
+        engine.setTrackMute(t.id, t.mute);
+        engine.setTrackEffects(t.id, t.effects);
+      }
+    }
+    engine.updateSoloState(currentTracks);
     if (isPlaying) {
       engine.stop();
       setIsPlaying(false);
     } else {
-      engine.play(cursorRef.current, tracksRef.current, {
+      engine.play(cursorRef.current, currentTracks, {
         loopEnabled, loopStart, loopEnd, bpm,
       });
       setIsPlaying(true);
@@ -515,7 +664,11 @@ function DawStudio({ token, apiBase = '', onClose }) {
 
   const handleStop = useCallback(() => {
     const engine = engineRef.current;
-    if (engine) engine.stop();
+    if (engine) {
+      engine.stopRecording();
+      engine.stop();
+    }
+    setIsRecording(false);
     setIsPlaying(false);
     setCursorPos(0);
   }, []);
@@ -524,33 +677,59 @@ function DawStudio({ token, apiBase = '', onClose }) {
     const engine = engineRef.current;
     if (!engine) return;
     await engine.init();
+    // Ensure track nodes exist
+    const currentTracks = tracksRef.current;
+    for (const t of currentTracks) {
+      if (!engine.trackNodes.has(t.id)) engine.createTrackNode(t.id);
+      if (engine.trackNodes.has(t.id)) {
+        engine.setTrackVolume(t.id, t.volume);
+        engine.setTrackPan(t.id, t.pan);
+        engine.setTrackMute(t.id, t.mute);
+        engine.setTrackEffects(t.id, t.effects);
+      }
+    }
+    engine.updateSoloState(currentTracks);
 
     if (isRecording) {
       engine.stopRecording();
       engine.stop();
       setIsRecording(false);
       setIsPlaying(false);
+      showToast('Record selesai', 'success');
     } else {
-      // Find armed tracks
-      const armedTracks = tracksRef.current.filter(t => t.armed);
+      // Find armed tracks — hanya track yang di-Arm yang direkam
+      const armedTracks = currentTracks.filter(t => t.armed);
       if (armedTracks.length === 0) {
-        showToast('Aktifkan tombol ARM (●) pada track yang ingin direkam', 'error');
+        showToast('Arm (●) dulu track yang mau direkam. Track lain tetap diputar sebagai iringan.', 'error');
         return;
       }
       const recStart = cursorRef.current;
+      const armedIds = armedTracks.map(t => t.id);
       engine.onRecordingDone = async (trackId, blob) => {
         try {
-          const file = new File([blob], `Recording_${Date.now()}.webm`, { type: blob.type });
+          const file = new File([blob], `Recording_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
           await importAudioFiles([file], trackId, recStart);
-          showToast('Rekaman berhasil!', 'success');
+          showToast('Overdub masuk ke track!', 'success');
         } catch (e) { console.error(e); }
       };
-      
+
       const armedTracksData = armedTracks.map(t => ({ trackId: t.id, inputId: t.inputId }));
-      await engine.startRecording(armedTracksData);
-      engine.play(recStart, tracksRef.current, { loopEnabled, loopStart, loopEnd, bpm });
-      setIsRecording(true);
-      setIsPlaying(true);
+      try {
+        await engine.startRecording(armedTracksData);
+        // Play semua track SEBAGAI IRINGAN, kecuali track yang sedang di-record
+        engine.play(recStart, currentTracks, {
+          loopEnabled, loopStart, loopEnd, bpm,
+          skipTrackIds: armedIds,
+        });
+        setIsRecording(true);
+        setIsPlaying(true);
+        const names = armedTracks.map(t => t.name).join(', ');
+        showToast(`REC: ${names} — track lain diputar sebagai iringan`, 'success');
+      } catch (err) {
+        console.error(err);
+        engine.stopRecording();
+        showToast('Gagal mulai rekam. Cek soundcard & Arm track lagi.', 'error');
+      }
     }
   }, [isRecording, loopEnabled, loopStart, loopEnd, bpm, importAudioFiles, showToast]);
 
@@ -578,6 +757,29 @@ function DawStudio({ token, apiBase = '', onClose }) {
     return () => { active = false; cancelAnimationFrame(meterRafRef.current); };
   }, [isPlaying]);
 
+  // Live input meter saat track armed (alat musik / mic)
+  useEffect(() => {
+    const anyArmed = tracks.some(t => t.armed);
+    if (!anyArmed) {
+      setInputMeterLevels({});
+      return;
+    }
+    let active = true;
+    let rafId = 0;
+    const engine = engineRef.current;
+    const tick = () => {
+      if (!active || !engine) return;
+      const next = {};
+      for (const t of tracksRef.current) {
+        if (t.armed) next[t.id] = engine.getInputMonitorLevel(t.id);
+      }
+      setInputMeterLevels(next);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => { active = false; cancelAnimationFrame(rafId); };
+  }, [tracks]);
+
   // ============ EXPORT ============
 
   const handleExport = useCallback(async () => {
@@ -597,7 +799,10 @@ function DawStudio({ token, apiBase = '', onClose }) {
       if (maxEnd <= 0) { showToast('Tidak ada audio untuk di-export', 'error'); setExporting(false); return; }
       maxEnd += 0.5; // small padding
 
-      const rendered = await engine.bounce(tracksRef.current, maxEnd);
+      const rendered = await engine.bounce(tracksRef.current, maxEnd, {
+        masterVolume: masterVol,
+        masterSuite,
+      });
       const wavBlob = audioBufferToWav(rendered);
 
       if (exportFormat === 'mp3') {
@@ -635,7 +840,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
       showToast('Gagal export: ' + err.message, 'error');
     }
     setExporting(false);
-  }, [projectName, showToast, exportFormat, apiBase, token]);
+  }, [projectName, showToast, exportFormat, apiBase, token, masterVol, masterSuite]);
 
   // ============ DRUM GENERATOR ============
 
@@ -776,6 +981,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
         tracks: tracksRef.current,
         masterVolume: masterVol,
         masterLimiterEnabled: limiterOn,
+        masterSuite,
       };
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -793,7 +999,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
       console.error(err);
       showToast('Gagal menyimpan project', 'error');
     }
-  }, [projectId, projectName, bpm, timeSignature, masterVol, limiterOn, token, apiBase, showToast]);
+  }, [projectId, projectName, bpm, timeSignature, masterVol, limiterOn, masterSuite, token, apiBase, showToast]);
 
   const loadProject = useCallback(async (id) => {
     try {
@@ -809,6 +1015,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
       setTracks(data.tracks || [createDefaultTrack(0)]);
       setMasterVol(data.masterVolume ?? 0);
       setLimiterOn(data.masterLimiterEnabled ?? true);
+      if (data.masterSuite) setMasterSuite(data.masterSuite);
       setCursorPos(0);
       setShowHome(false);
       showToast('Project dimuat!', 'success');
@@ -992,28 +1199,32 @@ function DawStudio({ token, apiBase = '', onClose }) {
       const trackY = RULER_HEIGHT + ti * trackHeight - scrollY;
       if (trackY + trackHeight < RULER_HEIGHT || trackY > h) continue;
 
-      for (const region of track.regions) {
+      for (const region of (track.regions || [])) {
         const rx = region.startTime * zoom - scrollX;
-        const rw = region.duration * zoom;
+        const rw = Math.max(1, region.duration * zoom);
         if (rx + rw < 0 || rx > w) continue;
 
         const ry = trackY + 2;
         const rh = trackHeight - 4;
         const selected = selectedIds.has(region.id);
-        const color = track.color;
+        const color = track.color || '#3a86ff';
 
         // Region body
         ctx.save();
         ctx.beginPath();
         const radius = 4;
-        ctx.roundRect(rx, ry, rw, rh, radius);
+        if (typeof ctx.roundRect === 'function') {
+          ctx.roundRect(rx, ry, rw, rh, radius);
+        } else {
+          ctx.rect(rx, ry, rw, rh);
+        }
         ctx.clip();
 
         // Background fill
         ctx.fillStyle = hexToRgba(color, 0.18);
         ctx.fillRect(rx, ry, rw, rh);
 
-        // Waveform
+        // Waveform (downsample to visible pixels to avoid UI freeze on long clips)
         const peaks = audioLib[region.audioId]?.peaks;
         if (peaks && peaks.length > 0) {
           const totalAudioDuration = audioLib[region.audioId]?.duration || 1;
@@ -1021,7 +1232,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
           const durationFraction = region.duration / totalAudioDuration;
           const startIdx = Math.floor(offsetFraction * peaks.length);
           const endIdx   = Math.floor((offsetFraction + durationFraction) * peaks.length);
-          const visiblePeaks = peaks.slice(startIdx, endIdx);
+          const visiblePeaks = peaks.slice(Math.max(0, startIdx), Math.max(startIdx + 1, endIdx));
 
           if (visiblePeaks.length > 0) {
             const centerY = ry + rh / 2;
@@ -1029,20 +1240,21 @@ function DawStudio({ token, apiBase = '', onClose }) {
             const amp = (rh / 2) * 0.85 * gainFactor;
             ctx.fillStyle = hexToRgba(color, WAVEFORM_COLOR_ALPHA);
             ctx.beginPath();
-            const endRw = Math.ceil(rw);
+            const drawW = Math.min(Math.ceil(rw), Math.ceil(w - rx + 2));
+            const step = Math.max(1, Math.floor(drawW / 2000));
             // Top half
-            for (let i = 0; i < endRw; i++) {
+            for (let i = 0; i < drawW; i += step) {
               const pi = Math.floor((i / rw) * visiblePeaks.length);
               const p = visiblePeaks[Math.min(pi, visiblePeaks.length - 1)];
-              const py = centerY - p.max * amp;
+              const py = centerY - (p?.max ?? 0) * amp;
               if (i === 0) ctx.moveTo(rx + i, py);
               else ctx.lineTo(rx + i, py);
             }
             // Bottom half (reverse)
-            for (let i = endRw - 1; i >= 0; i--) {
+            for (let i = drawW - 1; i >= 0; i -= step) {
               const pi = Math.floor((i / rw) * visiblePeaks.length);
               const p = visiblePeaks[Math.min(pi, visiblePeaks.length - 1)];
-              const py = centerY - p.min * amp;
+              const py = centerY - (p?.min ?? 0) * amp;
               ctx.lineTo(rx + i, py);
             }
             ctx.closePath();
@@ -1066,13 +1278,15 @@ function DawStudio({ token, apiBase = '', onClose }) {
           ctx.strokeStyle = '#fff';
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.roundRect(rx, ry, rw, rh, radius);
+          if (typeof ctx.roundRect === 'function') ctx.roundRect(rx, ry, rw, rh, radius);
+          else ctx.rect(rx, ry, rw, rh);
           ctx.stroke();
         } else {
           ctx.strokeStyle = hexToRgba(color, 0.4);
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.roundRect(rx, ry, rw, rh, radius);
+          if (typeof ctx.roundRect === 'function') ctx.roundRect(rx, ry, rw, rh, radius);
+          else ctx.rect(rx, ry, rw, rh);
           ctx.stroke();
         }
 
@@ -1088,12 +1302,14 @@ function DawStudio({ token, apiBase = '', onClose }) {
           ctx.fillStyle = handleColor;
           ctx.globalAlpha = handleAlpha;
           ctx.beginPath();
-          ctx.roundRect(rx + 1, handleY, handleW, handleH, 2);
+          if (typeof ctx.roundRect === 'function') ctx.roundRect(rx + 1, handleY, handleW, handleH, 2);
+          else ctx.rect(rx + 1, handleY, handleW, handleH);
           ctx.fill();
 
           // Right handle
           ctx.beginPath();
-          ctx.roundRect(rx + rw - handleW - 1, handleY, handleW, handleH, 2);
+          if (typeof ctx.roundRect === 'function') ctx.roundRect(rx + rw - handleW - 1, handleY, handleW, handleH, 2);
+          else ctx.rect(rx + rw - handleW - 1, handleY, handleW, handleH);
           ctx.fill();
 
           ctx.globalAlpha = 1;
@@ -1983,27 +2199,27 @@ function DawStudio({ token, apiBase = '', onClose }) {
                   onChange={e => updateTrack(track.id, { name: e.target.value })}
                   spellCheck={false}
                 />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginRight: 2 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginRight: 2 }}>
                   <button
                     className="daw-track-ctrl-btn"
                     onClick={() => moveTrack(track.id, 'up')}
                     title="Pindah ke atas"
-                    style={{ width: 16, height: 12, fontSize: '0.5rem', padding: 0 }}
+                    style={{ width: 22, height: 16, fontSize: '0.6rem', padding: 0 }}
                   >▲</button>
                   <button
                     className="daw-track-ctrl-btn"
                     onClick={() => moveTrack(track.id, 'down')}
                     title="Pindah ke bawah"
-                    style={{ width: 16, height: 12, fontSize: '0.5rem', padding: 0 }}
+                    style={{ width: 22, height: 16, fontSize: '0.6rem', padding: 0 }}
                   >▼</button>
                 </div>
                 <button
                   className="daw-track-ctrl-btn"
                   onClick={() => removeTrack(track.id)}
                   title="Hapus track"
-                  style={{ color: 'var(--daw-text-dim)', width: 20, height: 18, fontSize: '0.6rem' }}
+                  style={{ color: 'var(--daw-text-dim)', width: 28, height: 26 }}
                 >
-                  <X size={12} />
+                  <X size={14} />
                 </button>
               </div>
               <div className="daw-track-header-controls">
@@ -2019,20 +2235,28 @@ function DawStudio({ token, apiBase = '', onClose }) {
                 >S</button>
                 <button
                   className={`daw-track-ctrl-btn ${track.armed ? 'arm-active' : ''}`}
-                  onClick={() => updateTrack(track.id, { armed: !track.armed })}
-                  title="Arm Record"
+                  onClick={() => armTrack(track.id)}
+                  title="Arm Record — siap rekam dari soundcard/alat musik"
                 >●</button>
+                <button
+                  className={`daw-track-ctrl-btn ${track.armed && track.monitor !== false ? 'monitor-active' : ''}`}
+                  onClick={() => toggleTrackMonitor(track.id)}
+                  disabled={!track.armed}
+                  title={track.monitor !== false ? 'Monitor ON (dengar input)' : 'Monitor OFF'}
+                >
+                  <Headphones size={14} />
+                </button>
                 <button
                   className="daw-track-ctrl-btn"
                   onClick={() => setFxTrackId(fxTrackId === track.id ? null : track.id)}
                   title="Effects"
                   style={fxTrackId === track.id ? { color: 'var(--daw-accent)', borderColor: 'var(--daw-accent)' } : {}}
                 >
-                  <Sliders size={11} />
+                  <Sliders size={14} />
                 </button>
               </div>
               <div className="daw-track-volume-row">
-                <Volume2 size={11} style={{ color: 'var(--daw-text-dim)', flexShrink: 0 }} />
+                <Volume2 size={14} style={{ color: 'var(--daw-text-dim)', flexShrink: 0 }} />
                 <input
                   type="range"
                   className="daw-track-vol-slider"
@@ -2057,23 +2281,41 @@ function DawStudio({ token, apiBase = '', onClose }) {
                   title={`Pan: ${track.pan > 0 ? 'R' : track.pan < 0 ? 'L' : 'C'} ${Math.abs(Math.round(track.pan * 100))}%`}
                 />
               </div>
-              {audioInputDevices.length > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, padding: '0 8px' }}>
-                  <select
-                    value={track.inputId || 'default'}
-                    onChange={e => updateTrack(track.id, { inputId: e.target.value })}
+              <div className="daw-track-input-row">
+                <select
+                  className="daw-track-input-select"
+                  value={track.inputId || 'default'}
+                  onChange={e => setTrackInputDevice(track.id, e.target.value)}
+                  title="Pilih input soundcard / interface untuk alat musik atau mic"
+                >
+                  <option value="default">Input Default (System)</option>
+                  {audioInputDevices.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label || `Input ${d.deviceId.slice(0, 6)}…`}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="daw-track-input-refresh"
+                  onClick={refreshAudioInputs}
+                  title="Refresh daftar soundcard"
+                >
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+              {track.armed && (
+                <div className="daw-track-input-meter" title="Level input live">
+                  <div
+                    className="daw-track-input-meter-fill"
                     style={{
-                      flex: 1, fontSize: '0.65rem', background: '#1a1a24', color: '#8b8b9e',
-                      border: '1px solid #2d2d3d', borderRadius: 2, padding: '1px 2px', outline: 'none'
+                      width: `${Math.max(0, Math.min(100, ((inputMeterLevels[track.id] ?? -100) + 60) / 60 * 100))}%`,
                     }}
-                    title="Audio Input Source"
-                  >
-                    <option value="default">Default Input</option>
-                    {audioInputDevices.map(d => (
-                      <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0,5)}...`}</option>
-                    ))}
-                  </select>
+                  />
                 </div>
+              )}
+              {inputPermissionError && track === tracks[0] && (
+                <div className="daw-track-input-hint">{inputPermissionError}</div>
               )}
             </div>
           ))}
@@ -2107,7 +2349,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
               <Upload size={32} /> Drop audio files here
             </div>
           )}
-          {tracks.length > 0 && tracks.every(t => t.regions.length === 0) && !isDragOver && (
+          {tracks.length > 0 && tracks.every(t => (t.regions?.length || 0) === 0) && !isDragOver && (
             <div className="daw-empty-timeline">
               <Music size={48} />
               <p>Drag & drop file audio ke sini, atau klik tombol Import</p>
@@ -2117,240 +2359,994 @@ function DawStudio({ token, apiBase = '', onClose }) {
       </div>
 
       {/* ── Mixer Toggle ── */}
-      <button className="daw-mixer-toggle" onClick={() => setMixerOpen(v => !v)}>
-        {mixerOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-        {mixerOpen ? 'Tutup Mixer' : 'Buka Mixer'}
+      <button
+        type="button"
+        className={`daw-mixer-toggle ${mixerOpen ? 'is-open' : ''}`}
+        onClick={() => setMixerOpen(v => !v)}
+        title={mixerOpen ? 'Tutup mixer' : 'Buka Studio Mixer & Mastering'}
+      >
+        <Sliders size={16} />
+        <span>{mixerOpen ? 'Tutup Mixer' : 'Buka Studio Mixer & Mastering'}</span>
+        {mixerOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
       </button>
 
       {/* ── Mixer Panel ── */}
       {mixerOpen && (
-        <div className="daw-mixer">
-          {tracks.map(track => {
-            const level = meterLevels[track.id] ?? -100;
-            const meterH = Math.max(0, Math.min(100, (level + 60) / 60 * 100));
-            const fx = track.effects;
-            return (
-              <div key={track.id} className="daw-mixer-channel">
-                <div className="daw-mixer-channel-color" style={{ background: track.color }} />
-                <div className="daw-mixer-channel-label" style={{ position: 'relative', marginTop: '6px', textAlign: 'center', fontSize: '0.8rem', fontWeight: 700, color: '#f8fafc', padding: '2px 0 6px 0', letterSpacing: '0.5px', zIndex: 2, overflow: 'visible', lineHeight: 1.2 }}>{track.name}</div>
-
-                {/* Knobs Row: Pan */}
-                <div className="daw-mixer-knobs-row" style={{ justifyContent: 'center' }}>
-                  <RotaryKnob
-                    label="Pan"
-                    value={track.pan}
-                    min={-1} max={1} step={0.05}
-                    color="#06d6a0"
-                    onChange={v => updateTrack(track.id, { pan: v })}
-                    onChangeEnd={() => pushUndo(tracksRef.current)}
-                    formatValue={v => v === 0 ? 'C' : v < 0 ? `L${Math.round(Math.abs(v)*100)}` : `R${Math.round(v*100)}`}
-                    size={30}
-                  />
-                </div>
-
-                {/* Fader + Meter */}
-                <div className="daw-mixer-fader-area">
-                  <input
-                    type="range"
-                    className="daw-mixer-fader"
-                    min={-60}
-                    max={12}
-                    step={0.5}
-                    value={track.volume}
-                    onChange={e => updateTrack(track.id, { volume: Number(e.target.value) })}
-                    onMouseUp={() => pushUndo(tracksRef.current)}
-                  />
-                  <div className="daw-mixer-meter">
-                    <div className="daw-mixer-meter-fill" style={{ height: `${meterH}%` }} />
-                  </div>
-                </div>
-                <div className="daw-mixer-db-label">{track.volume > 0 ? '+' : ''}{track.volume.toFixed(1)}</div>
-
-                {/* Controls */}
-                <div className="daw-mixer-channel-controls">
-                  <button
-                    className={`daw-mixer-ctrl-btn ${track.mute ? 'm-active' : ''}`}
-                    onClick={() => updateTrackPush(track.id, { mute: !track.mute })}
-                  >M</button>
-                  <button
-                    className={`daw-mixer-ctrl-btn ${track.solo ? 's-active' : ''}`}
-                    onClick={() => updateTrackPush(track.id, { solo: !track.solo })}
-                  >S</button>
-                </div>
-                <button
-                  className="daw-mixer-fx-btn"
-                  onClick={() => setFxTrackId(fxTrackId === track.id ? null : track.id)}
-                  style={fxTrackId === track.id ? { background: 'rgba(203,166,247,0.15)', borderColor: 'var(--daw-accent)', color: 'var(--daw-accent)' } : {}}
-                >EQ/FX</button>
-              </div>
-            );
-          })}
-
-          {/* Master Channel */}
-          <div className="daw-mixer-channel master">
-            <div className="daw-mixer-channel-color" style={{ background: 'linear-gradient(90deg, var(--daw-accent), var(--daw-accent-2))' }} />
-            <div className="daw-mixer-channel-label" style={{ color: 'var(--daw-accent)' }}>MASTER</div>
-            <div className="daw-mixer-knobs-row" style={{ marginTop: 4 }}>
-              <RotaryKnob
-                label="Vol"
-                value={masterVol}
-                min={-60} max={12} step={0.5}
-                color="var(--daw-accent)"
-                onChange={v => setMasterVol(v)}
-                formatValue={v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`}
-                size={36}
-              />
+        <div className="daw-mixer-container">
+          {/* Mixer Top Toolbar */}
+          <div className="daw-mixer-topbar">
+            <div className="daw-mixer-topbar-left">
+              <span className="daw-mixer-topbar-title">🎛️ STUDIO MIXING CONSOLE</span>
+              <span className="daw-mixer-topbar-badge">{tracks.length} Channels</span>
             </div>
-            <div className="daw-mixer-fader-area">
-              <input
-                type="range"
-                className="daw-mixer-fader"
-                min={-60}
-                max={12}
-                step={0.5}
-                value={masterVol}
-                onChange={e => setMasterVol(Number(e.target.value))}
-              />
-              <div className="daw-mixer-meter">
-                <div className="daw-mixer-meter-fill" style={{ height: `${Math.max(0, Math.min(100, ((meterLevels._master ?? -100) + 60) / 60 * 100))}%` }} />
-              </div>
-            </div>
-            <div className="daw-mixer-db-label">{masterVol > 0 ? '+' : ''}{masterVol.toFixed(1)}</div>
-            <div className="daw-mixer-channel-controls">
+            <div className="daw-mixer-topbar-actions">
               <button
-                className={`daw-mixer-ctrl-btn ${limiterOn ? 's-active' : ''}`}
-                onClick={() => setLimiterOn(v => !v)}
-                title="Limiter"
-                style={{ flex: 'none', width: '100%' }}
-              >LIM</button>
+                className="daw-mixer-topbar-btn auto-gain"
+                onClick={handleAutoGainStaging}
+                title="Auto Gain Staging: Menyeimbangkan fader seluruh track agar headroom master aman (-18dB target)"
+              >
+                <Zap size={13} />
+                <span>⚡ Auto-Gain Staging</span>
+              </button>
+              <button
+                className={`daw-mixer-topbar-btn master-suite ${masterSuite.compressor.enabled || masterSuite.limiter.enabled ? 'active' : ''}`}
+                onClick={() => setShowMasterModal(true)}
+                title="Buka Master Bus Mastering Suite"
+              >
+                <Sparkles size={13} />
+                <span>🎛️ Master Suite (MST FX)</span>
+              </button>
             </div>
+          </div>
+
+          <div className="daw-mixer">
+            {tracks.map((track, trackIdx) => {
+              const level = meterLevels[track.id] ?? -100;
+              const meterH = Math.max(0, Math.min(100, ((level + 60) / 60) * 100));
+              const isClipping = level >= 0;
+              const fx = track.effects || {};
+              const activeFxCount = [
+                fx.gate?.enabled,
+                fx.lowCut?.enabled,
+                fx.saturation?.enabled,
+                fx.guitar?.enabled,
+                fx.compressor?.enabled,
+                fx.chorus?.enabled,
+                fx.delay?.enabled,
+                fx.reverb?.enabled,
+              ].filter(Boolean).length;
+
+              return (
+                <div key={track.id} className="daw-mixer-channel">
+                  {/* Header: Track Index & Color Accent */}
+                  <div className="daw-mixer-header">
+                    <span className="daw-mixer-ch-num">{String(trackIdx + 1).padStart(2, '0')}</span>
+                    <div className="daw-mixer-channel-color" style={{ background: track.color, boxShadow: `0 0 8px ${track.color}88` }} />
+                  </div>
+
+                  {/* Track Name */}
+                  <div className="daw-mixer-channel-label" title={track.name}>{track.name}</div>
+
+                  {/* Knobs Row: Pan */}
+                  <div className="daw-mixer-knobs-row">
+                    <RotaryKnob
+                      label="PAN"
+                      value={track.pan}
+                      min={-1}
+                      max={1}
+                      step={0.05}
+                      color="#06d6a0"
+                      onChange={v => updateTrack(track.id, { pan: v })}
+                      onChangeEnd={() => pushUndo(tracksRef.current)}
+                      formatValue={v => v === 0 ? 'C' : v < 0 ? `L${Math.round(Math.abs(v) * 100)}` : `R${Math.round(v * 100)}`}
+                      size={32}
+                    />
+                  </div>
+
+                  {/* Fader Area with dB Scale & VU Meter */}
+                  <div className="daw-mixer-fader-area">
+                    <div className="daw-mixer-scale">
+                      <span className="scale-mark" style={{ top: '8.3%' }}>+6</span>
+                      <span className="scale-mark zero" style={{ top: '16.6%' }}>0</span>
+                      <span className="scale-mark" style={{ top: '25%' }}>-6</span>
+                      <span className="scale-mark" style={{ top: '33.3%' }}>-12</span>
+                      <span className="scale-mark" style={{ top: '50%' }}>-24</span>
+                      <span className="scale-mark" style={{ top: '83.3%' }}>-48</span>
+                      <span className="scale-mark" style={{ top: '96%' }}>-∞</span>
+                    </div>
+
+                    <div className="daw-mixer-fader-slot">
+                      <input
+                        type="range"
+                        className="daw-mixer-fader"
+                        min={-60}
+                        max={12}
+                        step={0.5}
+                        value={track.volume}
+                        onChange={e => updateTrack(track.id, { volume: Number(e.target.value) })}
+                        onMouseUp={() => pushUndo(tracksRef.current)}
+                      />
+                    </div>
+
+                    <div className="daw-mixer-meter-column">
+                      <div className={`daw-mixer-clip-led ${isClipping ? 'active' : ''}`} title="Peak / Clip Indicator" />
+                      <div className="daw-mixer-meter">
+                        <div className="daw-mixer-meter-fill" style={{ height: `${meterH}%` }} />
+                        <div className="daw-mixer-meter-segments" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Digital dB Display */}
+                  <div className="daw-mixer-db-label">
+                    <span className="db-value">{track.volume > 0 ? '+' : ''}{track.volume.toFixed(1)}</span>
+                    <span className="db-unit">dB</span>
+                  </div>
+
+                  {/* Controls (Mute / Solo) */}
+                  <div className="daw-mixer-channel-controls">
+                    <button
+                      className={`daw-mixer-ctrl-btn mute-btn ${track.mute ? 'm-active' : ''}`}
+                      onClick={() => updateTrackPush(track.id, { mute: !track.mute })}
+                      title="Mute Track"
+                    >
+                      <span className="btn-led" />
+                      M
+                    </button>
+                    <button
+                      className={`daw-mixer-ctrl-btn solo-btn ${track.solo ? 's-active' : ''}`}
+                      onClick={() => updateTrackPush(track.id, { solo: !track.solo })}
+                      title="Solo Track"
+                    >
+                      <span className="btn-led" />
+                      S
+                    </button>
+                  </div>
+
+                  {/* EQ / FX Button */}
+                  <button
+                    className={`daw-mixer-fx-btn ${fxTrackId === track.id ? 'active' : ''} ${activeFxCount > 0 ? 'has-fx' : ''}`}
+                    onClick={() => setFxTrackId(fxTrackId === track.id ? null : track.id)}
+                    title="Buka Channel FX & Presets Rack"
+                  >
+                    <Sliders size={12} style={{ marginRight: '3px' }} />
+                    <span>FX</span>
+                    {activeFxCount > 0 && <span className="daw-fx-active-badge">{activeFxCount}</span>}
+                  </button>
+                </div>
+              );
+            })}
+
+            {/* Master Channel */}
+            {(() => {
+              const masterLevel = meterLevels._master ?? -100;
+              const masterMeterH = Math.max(0, Math.min(100, ((masterLevel + 60) / 60) * 100));
+              const masterClipping = masterLevel >= 0;
+              return (
+                <div className="daw-mixer-channel master">
+                  <div className="daw-mixer-header">
+                    <span className="daw-mixer-ch-num master-num">MST</span>
+                    <div className="daw-mixer-channel-color" style={{ background: 'linear-gradient(90deg, #8338ec, #ff477e)', boxShadow: '0 0 10px rgba(255, 71, 126, 0.6)' }} />
+                  </div>
+
+                  <div className="daw-mixer-channel-label master-label">MAIN OUT</div>
+
+                  <div className="daw-mixer-knobs-row">
+                    <RotaryKnob
+                      label="TRIM"
+                      value={masterVol}
+                      min={-60}
+                      max={12}
+                      step={0.5}
+                      color="#ff477e"
+                      onChange={v => setMasterVol(v)}
+                      formatValue={v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`}
+                      size={34}
+                    />
+                  </div>
+
+                  <div className="daw-mixer-fader-area">
+                    <div className="daw-mixer-scale">
+                      <span className="scale-mark" style={{ top: '8.3%' }}>+6</span>
+                      <span className="scale-mark zero" style={{ top: '16.6%' }}>0</span>
+                      <span className="scale-mark" style={{ top: '25%' }}>-6</span>
+                      <span className="scale-mark" style={{ top: '33.3%' }}>-12</span>
+                      <span className="scale-mark" style={{ top: '50%' }}>-24</span>
+                      <span className="scale-mark" style={{ top: '83.3%' }}>-48</span>
+                      <span className="scale-mark" style={{ top: '96%' }}>-∞</span>
+                    </div>
+
+                    <div className="daw-mixer-fader-slot master-slot">
+                      <input
+                        type="range"
+                        className="daw-mixer-fader master-fader"
+                        min={-60}
+                        max={12}
+                        step={0.5}
+                        value={masterVol}
+                        onChange={e => setMasterVol(Number(e.target.value))}
+                      />
+                    </div>
+
+                    <div className="daw-mixer-meter-column master-meter-col">
+                      <div className={`daw-mixer-clip-led ${masterClipping ? 'active' : ''}`} title="Master Peak / Clip Indicator" />
+                      <div className="daw-mixer-meter master-meter">
+                        <div className="daw-mixer-meter-fill master-fill" style={{ height: `${masterMeterH}%` }} />
+                        <div className="daw-mixer-meter-segments" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="daw-mixer-db-label master-db">
+                    <span className="db-value">{masterVol > 0 ? '+' : ''}{masterVol.toFixed(1)}</span>
+                    <span className="db-unit">dB</span>
+                  </div>
+
+                  {/* Master Controls: Limiter Toggle */}
+                  <div className="daw-mixer-channel-controls">
+                    <button
+                      className={`daw-mixer-ctrl-btn limiter-btn ${limiterOn ? 's-active' : ''}`}
+                      onClick={() => setLimiterOn(v => !v)}
+                      title="Master Brickwall Limiter Fast Toggle"
+                      style={{ width: '100%' }}
+                    >
+                      <span className="btn-led" />
+                      LIMITER
+                    </button>
+                  </div>
+
+                  {/* Master Suite Modal Trigger Button */}
+                  <button
+                    className="daw-mixer-fx-btn active master-suite-btn"
+                    onClick={() => setShowMasterModal(true)}
+                    title="Buka Master Mastering Suite (EQ, Glue Compressor, Stereo Width, Brickwall Limiter)"
+                  >
+                    <Sparkles size={11} style={{ marginRight: 3 }} />
+                    <span>MST SUITE</span>
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
 
-      {/* ── Effects Panel ── */}
+      {/* ── Effects Rack Panel ── */}
       {fxTrackId && (() => {
         const track = tracks.find(t => t.id === fxTrackId);
         if (!track) return null;
-        const fx = track.effects;
+        const fx = track.effects || {};
         const setFx = (section, updates) => {
           updateTrackPush(fxTrackId, {
-            effects: { ...fx, [section]: { ...fx[section], ...updates } },
+            effects: { ...fx, [section]: { ...(fx[section] || {}), ...updates } },
           });
         };
+
+        const handleApplyPreset = (presetEffects) => {
+          updateTrackPush(fxTrackId, {
+            effects: JSON.parse(JSON.stringify(presetEffects)),
+          });
+          showToast('⚡ Preset mixing berhasil dimuat!', 'success');
+        };
+
         return (
           <div className="daw-fx-panel">
-            <h4>
-              <Sliders size={16} />
-              FX — {track.name}
+            {/* Header */}
+            <div className="daw-fx-header">
+              <div className="daw-fx-header-left">
+                <span className="daw-fx-header-color" style={{ background: track.color }} />
+                <span className="daw-fx-header-title">PRO FX RACK — {track.name}</span>
+              </div>
               <button className="close-btn" onClick={() => setFxTrackId(null)}><X size={14} /></button>
-            </h4>
-
-            {/* GUITAR AMP */}
-            <div className="daw-fx-section">
-              <div className="daw-fx-section-header">
-                <span className="daw-fx-section-title">Guitar Amp</span>
-                <div className={`daw-fx-toggle ${fx.guitar?.enabled ? 'on' : ''}`} onClick={() => setFx('guitar', { enabled: !fx.guitar?.enabled })} />
-              </div>
-              <div className="daw-fx-row">
-                <label>Mode</label>
-                <select
-                  value={fx.guitar?.mode || 'clean'}
-                  onChange={e => setFx('guitar', { mode: e.target.value })}
-                  style={{ flex: 1, background: '#1a1a24', color: '#fff', border: '1px solid #2d2d3d', borderRadius: 4, padding: '2px 4px', fontSize: '0.7rem', outline: 'none' }}
-                >
-                  <option value="clean">Clean</option>
-                  <option value="overdrive">Overdrive</option>
-                  <option value="distortion">Distortion</option>
-                </select>
-              </div>
-              <div className="daw-fx-row">
-                <label>Drive</label>
-                <input type="range" className="daw-fx-slider" min={0} max={1} step={0.01} value={fx.guitar?.drive ?? 0.5} onChange={e => setFx('guitar', { drive: Number(e.target.value) })} />
-                <span className="daw-fx-value">{Math.round((fx.guitar?.drive ?? 0.5) * 100)}%</span>
-              </div>
             </div>
 
-            {/* EQ */}
-            <div className="daw-fx-section">
-              <div className="daw-fx-section-header">
-                <span className="daw-fx-section-title">EQ 3-Band</span>
-              </div>
-              {['low', 'mid', 'high'].map(band => (
-                <div className="daw-fx-row" key={band}>
-                  <label>{band.charAt(0).toUpperCase() + band.slice(1)}</label>
-                  <input type="range" className="daw-fx-slider" min={-12} max={12} step={0.5} value={fx.eq[band]} onChange={e => setFx('eq', { [band]: Number(e.target.value) })} />
-                  <span className="daw-fx-value">{fx.eq[band] > 0 ? '+' : ''}{fx.eq[band].toFixed(1)}</span>
+            {/* Quick Presets Dropdown */}
+            <div className="daw-fx-preset-bar">
+              <span className="daw-fx-preset-label">⚡ Instan Preset:</span>
+              <select
+                className="daw-fx-preset-select"
+                defaultValue=""
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  const [cat, pId] = e.target.value.split(':::');
+                  const foundCat = TRACK_MIXING_PRESETS.find(c => c.category === cat);
+                  const foundPreset = foundCat?.presets.find(p => p.id === pId);
+                  if (foundPreset) handleApplyPreset(foundPreset.effects);
+                  e.target.value = '';
+                }}
+              >
+                <option value="" disabled>Pilih Preset Mixing Vokal / Instrumen...</option>
+                {TRACK_MIXING_PRESETS.map(cat => (
+                  <optgroup key={cat.category} label={`── ${cat.category} ──`}>
+                    {cat.presets.map(p => (
+                      <option key={p.id} value={`${cat.category}:::${p.id}`}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+
+            {/* Tab Navigation */}
+            <div className="daw-fx-tabs">
+              <button
+                className={`daw-fx-tab-btn ${activeFxTab === 'prep' ? 'active' : ''}`}
+                onClick={() => setActiveFxTab('prep')}
+              >
+                🛡️ Filter & Gate
+              </button>
+              <button
+                className={`daw-fx-tab-btn ${activeFxTab === 'tone' ? 'active' : ''}`}
+                onClick={() => setActiveFxTab('tone')}
+              >
+                🎙️ Tone & Drive
+              </button>
+              <button
+                className={`daw-fx-tab-btn ${activeFxTab === 'dynamics' ? 'active' : ''}`}
+                onClick={() => setActiveFxTab('dynamics')}
+              >
+                🎚️ Dinamika
+              </button>
+              <button
+                className={`daw-fx-tab-btn ${activeFxTab === 'space' ? 'active' : ''}`}
+                onClick={() => setActiveFxTab('space')}
+              >
+                🌌 Space & Width
+              </button>
+            </div>
+
+            {/* Tab Content */}
+            <div className="daw-fx-tab-body">
+              {/* TAB 1: PREP & FILTER */}
+              {activeFxTab === 'prep' && (
+                <>
+                  {/* NOISE GATE */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <ShieldAlert size={14} style={{ color: '#06d6a0' }} />
+                        <span className="daw-fx-section-title">Noise Gate (Pembersih Noise)</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.gate?.enabled ? 'on' : ''}`} onClick={() => setFx('gate', { enabled: !fx.gate?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Threshold</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={-90}
+                        max={-10}
+                        step={1}
+                        value={fx.gate?.threshold ?? -45}
+                        onChange={e => setFx('gate', { threshold: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{fx.gate?.threshold ?? -45} dB</span>
+                    </div>
+                  </div>
+
+                  {/* LOW CUT / HPF */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Activity size={14} style={{ color: '#118ab2' }} />
+                        <span className="daw-fx-section-title">Low-Cut / HPF Filter (Potong Bass Bocor)</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.lowCut?.enabled ? 'on' : ''}`} onClick={() => setFx('lowCut', { enabled: !fx.lowCut?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Cutoff Freq</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={20}
+                        max={400}
+                        step={5}
+                        value={fx.lowCut?.frequency ?? 80}
+                        onChange={e => setFx('lowCut', { frequency: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{fx.lowCut?.frequency ?? 80} Hz</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <button className="daw-fx-mini-btn" onClick={() => setFx('lowCut', { enabled: true, frequency: 80 })}>Vokal (80Hz)</button>
+                      <button className="daw-fx-mini-btn" onClick={() => setFx('lowCut', { enabled: true, frequency: 120 })}>Gitar/Akustik (120Hz)</button>
+                      <button className="daw-fx-mini-btn" onClick={() => setFx('lowCut', { enabled: true, frequency: 35 })}>Kick/Sub (35Hz)</button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* TAB 2: TONE & SATURATION */}
+              {activeFxTab === 'tone' && (
+                <>
+                  {/* EQ 3-BAND */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <SlidersHorizontal size={14} style={{ color: '#ffd166' }} />
+                        <span className="daw-fx-section-title">EQ 3-Band Parametric</span>
+                      </div>
+                    </div>
+                    {['low', 'mid', 'high'].map(band => (
+                      <div className="daw-fx-row" key={band}>
+                        <label>{band === 'low' ? 'Low (Bass)' : band === 'mid' ? 'Mid (Vokal)' : 'High (Air/Treble)'}</label>
+                        <input
+                          type="range"
+                          className="daw-fx-slider"
+                          min={-18}
+                          max={18}
+                          step={0.5}
+                          value={fx.eq?.[band] ?? 0}
+                          onChange={e => setFx('eq', { [band]: Number(e.target.value) })}
+                        />
+                        <span className="daw-fx-value">{(fx.eq?.[band] ?? 0) > 0 ? '+' : ''}{(fx.eq?.[band] ?? 0).toFixed(1)} dB</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* TAPE SATURATION */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Flame size={14} style={{ color: '#ff477e' }} />
+                        <span className="daw-fx-section-title">Analog Tape Saturation (Kehangatan)</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.saturation?.enabled ? 'on' : ''}`} onClick={() => setFx('saturation', { enabled: !fx.saturation?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Drive (Harmonics)</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.saturation?.drive ?? 0.25}
+                        onChange={e => setFx('saturation', { drive: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.saturation?.drive ?? 0.25) * 100)}%</span>
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Warmth (Ketebalan)</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.saturation?.warmth ?? 0.6}
+                        onChange={e => setFx('saturation', { warmth: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.saturation?.warmth ?? 0.6) * 100)}%</span>
+                    </div>
+                  </div>
+
+                  {/* GUITAR AMP SIMULATOR */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Radio size={14} style={{ color: '#8338ec' }} />
+                        <span className="daw-fx-section-title">Guitar Amp Cabinet Simulator</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.guitar?.enabled ? 'on' : ''}`} onClick={() => setFx('guitar', { enabled: !fx.guitar?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Mode</label>
+                      <select
+                        value={fx.guitar?.mode || 'clean'}
+                        onChange={e => setFx('guitar', { mode: e.target.value })}
+                        className="daw-fx-select"
+                      >
+                        <option value="clean">Clean Tube Amp</option>
+                        <option value="overdrive">Crunch Overdrive</option>
+                        <option value="distortion">Heavy Lead Distortion</option>
+                      </select>
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Drive</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.guitar?.drive ?? 0.5}
+                        onChange={e => setFx('guitar', { drive: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.guitar?.drive ?? 0.5) * 100)}%</span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* TAB 3: DYNAMICS / COMPRESSOR */}
+              {activeFxTab === 'dynamics' && (
+                <div className="daw-fx-section">
+                  <div className="daw-fx-section-header">
+                    <div className="daw-fx-section-title-wrap">
+                      <Gauge size={14} style={{ color: '#06d6a0' }} />
+                      <span className="daw-fx-section-title">Studio Dynamics Compressor</span>
+                    </div>
+                    <div className={`daw-fx-toggle ${fx.compressor?.enabled ? 'on' : ''}`} onClick={() => setFx('compressor', { enabled: !fx.compressor?.enabled })} />
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Threshold</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-60}
+                      max={0}
+                      step={1}
+                      value={fx.compressor?.threshold ?? -20}
+                      onChange={e => setFx('compressor', { threshold: Number(e.target.value) })}
+                    />
+                    <span className="daw-fx-value">{fx.compressor?.threshold ?? -20} dB</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Ratio</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={1}
+                      max={20}
+                      step={0.5}
+                      value={fx.compressor?.ratio ?? 4}
+                      onChange={e => setFx('compressor', { ratio: Number(e.target.value) })}
+                    />
+                    <span className="daw-fx-value">{(fx.compressor?.ratio ?? 4).toFixed(1)}:1</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Attack</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={0.001}
+                      max={0.5}
+                      step={0.001}
+                      value={fx.compressor?.attack ?? 0.005}
+                      onChange={e => setFx('compressor', { attack: Number(e.target.value) })}
+                    />
+                    <span className="daw-fx-value">{((fx.compressor?.attack ?? 0.005) * 1000).toFixed(0)} ms</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Release</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={0.01}
+                      max={2}
+                      step={0.01}
+                      value={fx.compressor?.release ?? 0.2}
+                      onChange={e => setFx('compressor', { release: Number(e.target.value) })}
+                    />
+                    <span className="daw-fx-value">{((fx.compressor?.release ?? 0.2) * 1000).toFixed(0)} ms</span>
+                  </div>
                 </div>
-              ))}
-            </div>
+              )}
 
-            {/* Compressor */}
-            <div className="daw-fx-section">
-              <div className="daw-fx-section-header">
-                <span className="daw-fx-section-title">Compressor</span>
-                <div className={`daw-fx-toggle ${fx.compressor.enabled ? 'on' : ''}`} onClick={() => setFx('compressor', { enabled: !fx.compressor.enabled })} />
-              </div>
-              <div className="daw-fx-row">
-                <label>Threshold</label>
-                <input type="range" className="daw-fx-slider" min={-60} max={0} step={1} value={fx.compressor.threshold} onChange={e => setFx('compressor', { threshold: Number(e.target.value) })} />
-                <span className="daw-fx-value">{fx.compressor.threshold} dB</span>
-              </div>
-              <div className="daw-fx-row">
-                <label>Ratio</label>
-                <input type="range" className="daw-fx-slider" min={1} max={20} step={0.5} value={fx.compressor.ratio} onChange={e => setFx('compressor', { ratio: Number(e.target.value) })} />
-                <span className="daw-fx-value">{fx.compressor.ratio}:1</span>
-              </div>
-              <div className="daw-fx-row">
-                <label>Attack</label>
-                <input type="range" className="daw-fx-slider" min={0} max={1} step={0.001} value={fx.compressor.attack} onChange={e => setFx('compressor', { attack: Number(e.target.value) })} />
-                <span className="daw-fx-value">{(fx.compressor.attack * 1000).toFixed(0)} ms</span>
-              </div>
-              <div className="daw-fx-row">
-                <label>Release</label>
-                <input type="range" className="daw-fx-slider" min={0.01} max={2} step={0.01} value={fx.compressor.release} onChange={e => setFx('compressor', { release: Number(e.target.value) })} />
-                <span className="daw-fx-value">{(fx.compressor.release * 1000).toFixed(0)} ms</span>
-              </div>
-            </div>
+              {/* TAB 4: SPACE & CHORUS */}
+              {activeFxTab === 'space' && (
+                <>
+                  {/* STEREO CHORUS */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Repeat size={14} style={{ color: '#06d6a0' }} />
+                        <span className="daw-fx-section-title">Stereo Chorus / Doubler</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.chorus?.enabled ? 'on' : ''}`} onClick={() => setFx('chorus', { enabled: !fx.chorus?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Wet / Mix</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.chorus?.wet ?? 0.35}
+                        onChange={e => setFx('chorus', { wet: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.chorus?.wet ?? 0.35) * 100)}%</span>
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Depth (Lebar)</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.chorus?.depth ?? 0.6}
+                        onChange={e => setFx('chorus', { depth: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.chorus?.depth ?? 0.6) * 100)}%</span>
+                    </div>
+                  </div>
 
-            {/* Reverb */}
-            <div className="daw-fx-section">
-              <div className="daw-fx-section-header">
-                <span className="daw-fx-section-title">Reverb</span>
-                <div className={`daw-fx-toggle ${fx.reverb.enabled ? 'on' : ''}`} onClick={() => setFx('reverb', { enabled: !fx.reverb.enabled })} />
-              </div>
-              <div className="daw-fx-row">
-                <label>Wet</label>
-                <input type="range" className="daw-fx-slider" min={0} max={1} step={0.01} value={fx.reverb.wet} onChange={e => setFx('reverb', { wet: Number(e.target.value) })} />
-                <span className="daw-fx-value">{Math.round(fx.reverb.wet * 100)}%</span>
-              </div>
-              <div className="daw-fx-row">
-                <label>Decay</label>
-                <input type="range" className="daw-fx-slider" min={0.1} max={10} step={0.1} value={fx.reverb.decay} onChange={e => setFx('reverb', { decay: Number(e.target.value) })} />
-                <span className="daw-fx-value">{fx.reverb.decay.toFixed(1)}s</span>
-              </div>
-            </div>
+                  {/* FEEDBACK DELAY */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Activity size={14} style={{ color: '#118ab2' }} />
+                        <span className="daw-fx-section-title">Echo / Feedback Delay</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.delay?.enabled ? 'on' : ''}`} onClick={() => setFx('delay', { enabled: !fx.delay?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Wet / Mix</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.delay?.wet ?? 0.2}
+                        onChange={e => setFx('delay', { wet: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.delay?.wet ?? 0.2) * 100)}%</span>
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Feedback</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={0.95}
+                        step={0.01}
+                        value={fx.delay?.feedback ?? 0.3}
+                        onChange={e => setFx('delay', { feedback: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.delay?.feedback ?? 0.3) * 100)}%</span>
+                    </div>
+                  </div>
 
-            {/* Delay */}
-            <div className="daw-fx-section">
-              <div className="daw-fx-section-header">
-                <span className="daw-fx-section-title">Delay</span>
-                <div className={`daw-fx-toggle ${fx.delay.enabled ? 'on' : ''}`} onClick={() => setFx('delay', { enabled: !fx.delay.enabled })} />
-              </div>
-              <div className="daw-fx-row">
-                <label>Wet</label>
-                <input type="range" className="daw-fx-slider" min={0} max={1} step={0.01} value={fx.delay.wet} onChange={e => setFx('delay', { wet: Number(e.target.value) })} />
-                <span className="daw-fx-value">{Math.round(fx.delay.wet * 100)}%</span>
-              </div>
-              <div className="daw-fx-row">
-                <label>Feedback</label>
-                <input type="range" className="daw-fx-slider" min={0} max={0.95} step={0.01} value={fx.delay.feedback} onChange={e => setFx('delay', { feedback: Number(e.target.value) })} />
-                <span className="daw-fx-value">{Math.round(fx.delay.feedback * 100)}%</span>
-              </div>
+                  {/* REVERB */}
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Music size={14} style={{ color: '#ff477e' }} />
+                        <span className="daw-fx-section-title">Studio Hall Reverb</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.reverb?.enabled ? 'on' : ''}`} onClick={() => setFx('reverb', { enabled: !fx.reverb?.enabled })} />
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Wet / Mix</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.reverb?.wet ?? 0.25}
+                        onChange={e => setFx('reverb', { wet: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{Math.round((fx.reverb?.wet ?? 0.25) * 100)}%</span>
+                    </div>
+                    <div className="daw-fx-row">
+                      <label>Decay Time</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0.1}
+                        max={8}
+                        step={0.1}
+                        value={fx.reverb?.decay ?? 1.8}
+                        onChange={e => setFx('reverb', { decay: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value">{(fx.reverb?.decay ?? 1.8).toFixed(1)}s</span>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         );
       })()}
+
+      {/* ── Master Bus Mastering Suite Modal ── */}
+      {showMasterModal && (
+        <div className="daw-modal-overlay" onClick={() => setShowMasterModal(false)}>
+          <div className="daw-master-modal" onClick={e => e.stopPropagation()}>
+            <div className="daw-master-modal-header">
+              <div className="header-title-group">
+                <Sparkles size={20} className="glow-icon" />
+                <h3>MASTER BUS MASTERING SUITE</h3>
+                <span className="master-badge">Final Mix Polish</span>
+              </div>
+              <button className="close-btn" onClick={() => setShowMasterModal(false)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Mastering Preset Selector */}
+            <div className="daw-master-preset-bar">
+              <span className="preset-label">⚡ Pilih Target Mastering:</span>
+              <div className="preset-buttons-grid">
+                {MASTERING_PRESETS.map(p => (
+                  <button
+                    key={p.id}
+                    className="daw-master-preset-btn"
+                    onClick={() => {
+                      setMasterSuite(JSON.parse(JSON.stringify(p.suite)));
+                      showToast(`Master Preset '${p.name}' Diterapkan!`, 'success');
+                    }}
+                  >
+                    <span className="p-name">{p.name}</span>
+                    <span className="p-desc">{p.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 4 Core Mastering Modules */}
+            <div className="daw-master-modules-grid">
+              {/* MODULE 1: Master Glue Compressor */}
+              <div className="daw-master-module">
+                <div className="module-header">
+                  <div className="module-title">
+                    <Gauge size={15} style={{ color: '#06d6a0' }} />
+                    <span>Master Bus Glue Compressor</span>
+                  </div>
+                  <div
+                    className={`daw-fx-toggle ${masterSuite.compressor.enabled ? 'on' : ''}`}
+                    onClick={() => setMasterSuite(prev => ({
+                      ...prev,
+                      compressor: { ...prev.compressor, enabled: !prev.compressor.enabled }
+                    }))}
+                  />
+                </div>
+                <div className="module-content">
+                  <div className="daw-fx-row">
+                    <label>Threshold</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-36}
+                      max={0}
+                      step={0.5}
+                      value={masterSuite.compressor.threshold}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        compressor: { ...prev.compressor, threshold: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.compressor.threshold} dB</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Ratio</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={1.2}
+                      max={6}
+                      step={0.1}
+                      value={masterSuite.compressor.ratio}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        compressor: { ...prev.compressor, ratio: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.compressor.ratio.toFixed(1)}:1</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Attack</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={0.005}
+                      max={0.1}
+                      step={0.005}
+                      value={masterSuite.compressor.attack}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        compressor: { ...prev.compressor, attack: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{(masterSuite.compressor.attack * 1000).toFixed(0)} ms</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Release</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={0.05}
+                      max={1.0}
+                      step={0.05}
+                      value={masterSuite.compressor.release}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        compressor: { ...prev.compressor, release: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{(masterSuite.compressor.release * 1000).toFixed(0)} ms</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* MODULE 2: Master Precision Linear EQ */}
+              <div className="daw-master-module">
+                <div className="module-header">
+                  <div className="module-title">
+                    <SlidersHorizontal size={15} style={{ color: '#ffd166' }} />
+                    <span>Master Precision Linear EQ</span>
+                  </div>
+                  <button
+                    className={`daw-fx-subcut-btn ${masterSuite.eq.subCut ? 'active' : ''}`}
+                    onClick={() => setMasterSuite(prev => ({
+                      ...prev,
+                      eq: { ...prev.eq, subCut: !prev.eq.subCut }
+                    }))}
+                    title="Sub-Cut Filter: Memotong frekuensi di bawah 30Hz agar speaker tidak rumble"
+                  >
+                    30Hz Sub-Cut {masterSuite.eq.subCut ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+                <div className="module-content">
+                  <div className="daw-fx-row">
+                    <label>Low (Bass Punch)</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-8}
+                      max={8}
+                      step={0.2}
+                      value={masterSuite.eq.low}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        eq: { ...prev.eq, low: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.eq.low > 0 ? '+' : ''}{masterSuite.eq.low.toFixed(1)} dB</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>Mid (Clarity)</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-8}
+                      max={8}
+                      step={0.2}
+                      value={masterSuite.eq.mid}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        eq: { ...prev.eq, mid: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.eq.mid > 0 ? '+' : ''}{masterSuite.eq.mid.toFixed(1)} dB</span>
+                  </div>
+                  <div className="daw-fx-row">
+                    <label>High (Air & Shimmer)</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-8}
+                      max={8}
+                      step={0.2}
+                      value={masterSuite.eq.high}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        eq: { ...prev.eq, high: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.eq.high > 0 ? '+' : ''}{masterSuite.eq.high.toFixed(1)} dB</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* MODULE 3: Stereo Imager & Mono Compatibility */}
+              <div className="daw-master-module">
+                <div className="module-header">
+                  <div className="module-title">
+                    <Repeat size={15} style={{ color: '#118ab2' }} />
+                    <span>Stereo Imager & Mono Check</span>
+                  </div>
+                  <button
+                    className={`daw-fx-mono-btn ${masterSuite.isMono ? 'active' : ''}`}
+                    onClick={() => setMasterSuite(prev => ({
+                      ...prev,
+                      isMono: !prev.isMono
+                    }))}
+                    title="Uji kompatibilitas mono pada speaker smartphone & TikTok"
+                  >
+                    {masterSuite.isMono ? '🔊 MONO CHECK: ON' : '🎧 STEREO MODE'}
+                  </button>
+                </div>
+                <div className="module-content">
+                  <div className="daw-fx-row">
+                    <label>Stereo Width</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={0}
+                      max={1.5}
+                      step={0.05}
+                      disabled={masterSuite.isMono}
+                      value={masterSuite.width}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        width: Number(e.target.value)
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.isMono ? '0%' : `${Math.round(masterSuite.width * 100)}%`}</span>
+                  </div>
+                  <p className="daw-master-hint">
+                    💡 Tip: 100% = Normal Stereo, di atas 100% = lebih lebar, 0% = Mono.
+                    Nilai ekstrem bisa menipiskan suara tengah (vokal/bass).
+                  </p>
+                </div>
+              </div>
+
+              {/* MODULE 4: Brickwall Limiter */}
+              <div className="daw-master-module">
+                <div className="module-header">
+                  <div className="module-title">
+                    <ShieldAlert size={15} style={{ color: '#ff477e' }} />
+                    <span>Master Brickwall Limiter (Anti-Clip)</span>
+                  </div>
+                  <div
+                    className={`daw-fx-toggle ${masterSuite.limiter.enabled ? 'on' : ''}`}
+                    onClick={() => {
+                      const newEnabled = !masterSuite.limiter.enabled;
+                      setLimiterOn(newEnabled);
+                      setMasterSuite(prev => ({
+                        ...prev,
+                        limiter: { ...prev.limiter, enabled: newEnabled }
+                      }));
+                    }}
+                  />
+                </div>
+                <div className="module-content">
+                  <div className="daw-fx-row">
+                    <label>Output Ceiling</label>
+                    <input
+                      type="range"
+                      className="daw-fx-slider"
+                      min={-4.0}
+                      max={0.0}
+                      step={0.1}
+                      value={masterSuite.limiter.ceiling}
+                      onChange={e => setMasterSuite(prev => ({
+                        ...prev,
+                        limiter: { ...prev.limiter, ceiling: Number(e.target.value) }
+                      }))}
+                    />
+                    <span className="daw-fx-value">{masterSuite.limiter.ceiling.toFixed(1)} dB</span>
+                  </div>
+                  <p className="daw-master-hint">
+                    🛡️ Menjaga output audio tidak pernah pecah / distorsi melewati 0 dBFS.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="daw-master-modal-footer">
+              <button
+                className="daw-master-reset-btn"
+                onClick={() => {
+                  setMasterSuite({
+                    eq: { low: 0, mid: 0, high: 0, subCut: true },
+                    compressor: { enabled: false, threshold: -14, ratio: 2.5, attack: 0.03, release: 0.2 },
+                    width: 1.0,
+                    isMono: false,
+                    limiter: { enabled: true, ceiling: -0.5 },
+                  });
+                  showToast('Master Suite di-reset ke Flat!', 'info');
+                }}
+              >
+                <RotateCcw size={13} /> Reset ke Flat
+              </button>
+              <button
+                className="daw-master-done-btn"
+                onClick={() => setShowMasterModal(false)}
+              >
+                <Check size={14} /> Terapkan & Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* ── Track Picker Modal (Drop Audio) ── */}
       {pendingDropFiles && (
         <div className="daw-modal-overlay" onClick={() => setPendingDropFiles(null)}>
@@ -2644,4 +3640,62 @@ function DawStudio({ token, apiBase = '', onClose }) {
   );
 }
 
-export default DawStudio;
+// ─── Error Boundary ──────────────────────────────────────────────
+class DawErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    this.setState({ errorInfo });
+    console.error('DawStudio Error:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          height: '100vh', background: '#0d0f1a', color: '#e0e4f0', fontFamily: 'Inter, system-ui, sans-serif',
+          gap: '16px', padding: '40px',
+        }}>
+          <div style={{ fontSize: '2rem' }}>⚠️</div>
+          <h2 style={{ margin: 0, color: '#ff477e' }}>DAW Studio Error</h2>
+          <p style={{ color: '#94a3b8', maxWidth: '500px', textAlign: 'center' }}>
+            Terjadi kesalahan pada DAW Studio. Klik tombol di bawah untuk memulai ulang.
+          </p>
+          <pre style={{
+            background: '#171a2e', padding: '12px 16px', borderRadius: '8px', fontSize: '0.75rem',
+            color: '#f87171', maxWidth: '600px', overflow: 'auto', maxHeight: '120px',
+            border: '1px solid rgba(255,255,255,0.1)',
+          }}>
+            {this.state.error?.toString()}
+          </pre>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null, errorInfo: null })}
+            style={{
+              padding: '10px 24px', background: 'linear-gradient(135deg, #8338ec, #ff477e)',
+              color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
+              fontWeight: 700, fontSize: '0.9rem',
+            }}
+          >
+            🔄 Muat Ulang DAW
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function DawStudioWithErrorBoundary(props) {
+  return (
+    <DawErrorBoundary>
+      <DawStudio {...props} />
+    </DawErrorBoundary>
+  );
+}
+
+export default DawStudioWithErrorBoundary;
