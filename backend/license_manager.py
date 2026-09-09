@@ -672,12 +672,6 @@ def install_license(source_path: str):
         return {"success": False, "message": "File lisensi tidak ditemukan."}
     
     try:
-        # First validate the license file
-        result = validate_license(source_path)
-        
-        # Even if hardware doesn't match now, we still install it
-        # (validation will catch it when the app runs)
-        
         # Read the file
         with open(source_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -689,6 +683,15 @@ def install_license(source_path: str):
                 return {"success": False, "message": "File bukan lisensi JagatAudio yang valid."}
         except json.JSONDecodeError:
             return {"success": False, "message": "File bukan format lisensi yang valid."}
+
+        # Validate before replacing so a bad renew file cannot wipe an active license
+        result = validate_license(source_path)
+        if not result["valid"]:
+            return {
+                "success": False,
+                "message": result["message"],
+                "info": result.get("info")
+            }
         
         # Remove existing license files
         license_dir = get_license_dir()

@@ -95,6 +95,304 @@ export function extractPeaks(audioBuffer, numPeaks = 2048) {
   return peaks;
 }
 
+const RECORDER_WORKLET = `
+class JagatRecorderProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._on = false;
+    this._l = [];
+    this._r = [];
+    this._count = 0;
+    this._target = 4096;
+    this.port.onmessage = (e) => {
+      if (e.data === 'start') this._on = true;
+      if (e.data === 'stop') {
+        this._flush();
+        this._on = false;
+      }
+    };
+  }
+  _flush() {
+    if (this._count <= 0) return;
+    const l = new Float32Array(this._count);
+    const r = new Float32Array(this._count);
+    let o = 0;
+    for (let i = 0; i < this._l.length; i++) { l.set(this._l[i], o); o += this._l[i].length; }
+    o = 0;
+    for (let i = 0; i < this._r.length; i++) { r.set(this._r[i], o); o += this._r[i].length; }
+    this.port.postMessage({ l, r }, [l.buffer, r.buffer]);
+    this._l = [];
+    this._r = [];
+    this._count = 0;
+  }
+  process(inputs) {
+    if (!this._on) return true;
+    const chans = inputs[0];
+    if (!chans || !chans[0] || chans[0].length === 0) return true;
+    this._l.push(chans[0].slice());
+    this._r.push((chans[1] || chans[0]).slice());
+    this._count += chans[0].length;
+    if (this._count >= this._target) this._flush();
+    return true;
+  }
+}
+registerProcessor('jagat-recorder', JagatRecorderProcessor);
+`;
+
+function isNativeAudioContext(c) {
+  if (!c) return false;
+  const name = c.constructor?.name || '';
+  if (name === 'AudioContext' || name === 'webkitAudioContext' || name === 'OfflineAudioContext') return true;
+  try {
+    if (typeof AudioContext !== 'undefined' && c instanceof AudioContext) return true;
+    if (typeof webkitAudioContext !== 'undefined' && c instanceof webkitAudioContext) return true;
+  } catch (_) { /* ignore */ }
+  return false;
+}
+
+function unwrapNativeContext(start) {
+  let c = start;
+  const seen = new Set();
+  while (c && !seen.has(c)) {
+    seen.add(c);
+    if (isNativeAudioContext(c)) return c;
+    c = c.rawContext || c._nativeAudioContext || c._context || c.context || null;
+  }
+  return null;
+}
+
+function getNativeAudioContext(preferred) {
+  return unwrapNativeContext(preferred)
+    || unwrapNativeContext(Tone.getContext())
+    || unwrapNativeContext(Tone.getContext()?.rawContext)
+    || Tone.getContext()?.rawContext;
+}
+
+function isolatedAudioStream(stream) {
+  const tracks = stream?.getAudioTracks?.() || [];
+  if (!tracks.length) return stream;
+  return new MediaStream([tracks[0]]);
+}
+
+function isCommunicationsLabel(label) {
+  return /communications/i.test(label || '');
+}
+
+function outputDeviceRank(label) {
+  const l = (label || '').toLowerCase();
+  if (isCommunicationsLabel(l)) return 100;
+  if (/valeton|gp-?200/.test(l)) return 90;
+  if (/usb/.test(l)) return 80;
+  if (/hdmi|display/.test(l)) return 40;
+  if (/realtek/.test(l)) return 0;
+  if (/speaker|headphone|earphones|headset/.test(l) && !/usb|valeton/.test(l)) return 1;
+  return 20;
+}
+
+function ensureRecorderWorklet(ctx) {
+  if (!ctx?.audioWorklet?.addModule) return Promise.reject(new Error('no audioWorklet'));
+  if (!ctx._jagatRecorderReady) {
+    const blob = new Blob([RECORDER_WORKLET], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    ctx._jagatRecorderReady = ctx.audioWorklet.addModule(url).finally(() => {
+      try { URL.revokeObjectURL(url); } catch (_) { /* ignore */ }
+    });
+  }
+  return ctx._jagatRecorderReady;
+}
+
+/** DC block, rumble filter, soft limit, and edge fades for a smoother take. */
+export function polishRecordedBuffer(buffer) {
+  if (!buffer || !buffer.length) return buffer;
+  const sr = buffer.sampleRate;
+  const fadeInN = Math.max(8, Math.round(sr * 0.012));
+  const fadeOutN = Math.max(16, Math.round(sr * 0.022));
+  const hpR = Math.exp(-2 * Math.PI * 38 / sr);
+
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const d = buffer.getChannelData(ch);
+    const n = d.length;
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += d[i];
+    mean /= Math.max(1, n);
+
+    let prevX = 0;
+    let prevY = 0;
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const x = d[i] - mean;
+      const y = hpR * (prevY + x - prevX);
+      prevX = x;
+      prevY = y;
+      d[i] = y;
+      const a = Math.abs(y);
+      if (a > peak) peak = a;
+    }
+
+    let gain = 1;
+    if (peak > 0.03 && peak < 0.42) gain = Math.min(1.8, 0.72 / peak);
+    else if (peak > 0.97) gain = 0.89 / peak;
+
+    for (let i = 0; i < n; i++) {
+      let v = d[i] * gain;
+      if (v > 0.82 || v < -0.82) v = Math.tanh(v * 1.12) * 0.94;
+      if (i < fadeInN) {
+        const t = i / fadeInN;
+        v *= 0.5 - 0.5 * Math.cos(Math.PI * t);
+      }
+      const tail = n - 1 - i;
+      if (tail < fadeOutN) {
+        const t = tail / fadeOutN;
+        v *= 0.5 - 0.5 * Math.cos(Math.PI * t);
+      }
+      d[i] = v;
+    }
+  }
+  return buffer;
+}
+
+function trimAudioBufferStart(buffer, seconds) {
+  if (!buffer || seconds <= 0) return buffer;
+  const skip = Math.min(buffer.length - 64, Math.round(seconds * buffer.sampleRate));
+  if (skip <= 0) return buffer;
+  const len = buffer.length - skip;
+  const next = typeof buffer.constructor === 'function' && buffer.numberOfChannels
+    ? (typeof AudioBuffer !== 'undefined'
+      ? new AudioBuffer({
+          numberOfChannels: buffer.numberOfChannels,
+          length: len,
+          sampleRate: buffer.sampleRate,
+        })
+      : null)
+    : null;
+  const out = next || buffer;
+  if (!next) return buffer;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    out.getChannelData(ch).set(buffer.getChannelData(ch).subarray(skip));
+  }
+  return out;
+}
+
+function getMonoMix(buffer) {
+  const n = buffer.length;
+  const chs = buffer.numberOfChannels;
+  if (chs === 1) return buffer.getChannelData(0);
+  const out = new Float32Array(n);
+  const g = 1 / chs;
+  for (let ch = 0; ch < chs; ch++) {
+    const d = buffer.getChannelData(ch);
+    for (let i = 0; i < n; i++) out[i] += d[i] * g;
+  }
+  return out;
+}
+
+function copyToMonoBuffer(samples, sampleRate) {
+  const out = new AudioBuffer({ numberOfChannels: 1, length: samples.length, sampleRate });
+  out.getChannelData(0).set(samples);
+  return out;
+}
+
+function normCorrAtLag(a, b, lag, win, step) {
+  let num = 0;
+  let ea = 0;
+  let eb = 0;
+  let c = 0;
+  for (let i = 0; i < win; i += step) {
+    const j = i + lag;
+    if (j < 0 || j >= b.length) continue;
+    const x = a[i];
+    const y = b[j];
+    num += x * y;
+    ea += x * x;
+    eb += y * y;
+    c += 1;
+  }
+  if (c < 64 || ea < 1e-12 || eb < 1e-12) return 0;
+  return num / Math.sqrt(ea * eb);
+}
+
+/** If USB stereo is "gitar | loopback", keep the instrument side only. */
+function isolateInstrumentChannel(recorded, mixRef) {
+  if (!recorded || recorded.numberOfChannels < 2 || !mixRef) return recorded;
+  const mix = getMonoMix(mixRef);
+  const left = recorded.getChannelData(0);
+  const right = recorded.getChannelData(1);
+  const sr = recorded.sampleRate;
+  const win = Math.min(left.length, right.length, mix.length, Math.round(sr * 4));
+  const lags = [0, Math.round(0.05 * sr), Math.round(0.12 * sr), Math.round(-0.05 * sr)];
+  const peakNcc = (sig) => {
+    let best = 0;
+    for (const lag of lags) {
+      const s = Math.abs(normCorrAtLag(sig, mix, lag, win, 8));
+      if (s > best) best = s;
+    }
+    return best;
+  };
+  const nccL = peakNcc(left);
+  const nccR = peakNcc(right);
+  if (nccL > 0.32 && nccR + 0.16 < nccL) return copyToMonoBuffer(right, sr);
+  if (nccR > 0.32 && nccL + 0.16 < nccR) return copyToMonoBuffer(left, sr);
+  return recorded;
+}
+
+/** Hapus iringan yang bocor ke input (USB loopback) tanpa mematikan suara track lain. */
+function mixMinusBleed(recorded, mixRef) {
+  if (!recorded || !mixRef || recorded.length < 2048 || mixRef.length < 2048) return recorded;
+  const recMono = getMonoMix(recorded);
+  const mixMono = getMonoMix(mixRef);
+  const sr = recorded.sampleRate;
+  const maxLag = Math.round(0.38 * sr);
+  const win = Math.min(recMono.length, mixMono.length, Math.round(sr * 6));
+  const ds = 8;
+  const recDs = new Float32Array(Math.floor(win / ds));
+  const mixDs = new Float32Array(Math.floor(Math.min(mixMono.length, recMono.length) / ds));
+  for (let i = 0; i < recDs.length; i++) recDs[i] = recMono[i * ds];
+  for (let i = 0; i < mixDs.length; i++) mixDs[i] = mixMono[i * ds];
+  const maxLagDs = Math.round(maxLag / ds);
+  let bestLagDs = 0;
+  let best = 0;
+  for (let lag = -maxLagDs; lag <= maxLagDs; lag += 1) {
+    const score = normCorrAtLag(recDs, mixDs, lag, recDs.length, 1);
+    if (Math.abs(score) > Math.abs(best)) {
+      best = score;
+      bestLagDs = lag;
+    }
+  }
+  let bestLag = bestLagDs * ds;
+  for (let lag = bestLag - ds; lag <= bestLag + ds; lag += 1) {
+    if (lag < -maxLag || lag > maxLag) continue;
+    const score = normCorrAtLag(recMono, mixMono, lag, win, 4);
+    if (Math.abs(score) > Math.abs(best)) {
+      best = score;
+      bestLag = lag;
+    }
+  }
+  if (Math.abs(best) < 0.06) return recorded;
+
+  let num = 0;
+  let den = 0;
+  const n = recMono.length;
+  for (let i = 0; i < n; i += 1) {
+    const j = i + bestLag;
+    if (j < 0 || j >= mixMono.length) continue;
+    num += recMono[i] * mixMono[j];
+    den += mixMono[j] * mixMono[j];
+  }
+  if (den < 1e-8) return recorded;
+  const k = clamp(num / den, -1.8, 1.8);
+  if (Math.abs(k) < 0.04) return recorded;
+
+  for (let ch = 0; ch < recorded.numberOfChannels; ch++) {
+    const d = recorded.getChannelData(ch);
+    for (let i = 0; i < d.length; i++) {
+      const j = i + bestLag;
+      const m = (j >= 0 && j < mixMono.length) ? mixMono[j] : 0;
+      d[i] -= k * m;
+    }
+  }
+  return recorded;
+}
+
 // ─── Main class ──────────────────────────────────────────────────────
 
 class DawAudioEngine {
@@ -123,6 +421,10 @@ class DawAudioEngine {
     this._playing         = false;
     this._startCtxTime    = 0;   // Tone.now() when play was pressed
     this._startProjTime   = 0;   // project-time offset when play was pressed
+    this._playNativeCtxTime = null;
+    this._recordNativeCtxTime = null;
+    this._recordUsedMediaRecorder = false;
+    this._recPrep         = null;
     this._loopEnabled     = false;
     this._loopStart       = 0;
     this._loopEnd         = 16;
@@ -138,6 +440,14 @@ class DawAudioEngine {
 
     /* live input monitor (instrument / mic → track) */
     this._inputMonitors   = new Map(); // trackId -> { mic, meter }
+
+    /* playback output (hindari USB loopback ke input yang sama) */
+    this._outputDeviceId  = '';
+    this._restoreSinkId   = undefined;
+    this._sinkLocked      = false;
+    this._recordPlayDest  = null;
+    this._backingCtx      = null;
+    this._backingSource   = null;
 
     /* metronome */
     this._metronome       = null;
@@ -161,6 +471,8 @@ class DawAudioEngine {
     this.masterEq         = new Tone.EQ3(0, 0, 0);
     this.masterSubCut     = new Tone.Filter({ type: 'highpass', frequency: 20, rolloff: -12 });
     this.masterGain       = new Tone.Gain(1);
+    this.outputTap        = new Tone.Gain(1);
+    this.speakerGate      = new Tone.Gain(1);
 
     this.masterGain.chain(
       this.masterSubCut,
@@ -169,15 +481,18 @@ class DawAudioEngine {
       this.masterWidener,
       this.masterLimiter,
       this.masterMeter,
-      Tone.getDestination(),
     );
+    this.masterMeter.connect(this.outputTap);
+    this.outputTap.connect(this.speakerGate);
+    this.speakerGate.connect(Tone.getDestination());
 
-    /* click synth for metronome */
+    /* click synth for metronome — lewat outputTap supaya ikut di-mute dari GP-200 saat rekam */
     this._metronome = new Tone.MembraneSynth({
       pitchDecay: 0.008,
       octaves: 2,
       envelope: { attack: 0.001, decay: 0.08, sustain: 0, release: 0.04 },
-    }).toDestination();
+    });
+    this._metronome.connect(this.outputTap);
     this._metronome.volume.value = -6;
 
     this._initialized = true;
@@ -189,6 +504,8 @@ class DawAudioEngine {
     this.stopAllInputMonitors();
     for (const [id] of this.trackNodes) this.removeTrackNode(id);
     this.masterGain?.dispose();
+    this.outputTap?.dispose();
+    this.speakerGate?.dispose();
     this.masterSubCut?.dispose();
     this.masterEq?.dispose();
     this.masterCompressor?.dispose();
@@ -211,6 +528,7 @@ class DawAudioEngine {
       const channel    = new Tone.Channel(0, 0);
       const eq         = new Tone.EQ3(0, 0, 0);
       const compressor = new Tone.Compressor({ threshold: 0, ratio: 1, attack: 0.003, release: 0.25 });
+      const pitchShift = new Tone.PitchShift({ pitch: 0, windowSize: 0.08, wet: 0 });
       const delay      = new Tone.FeedbackDelay({ delayTime: '8n', feedback: 0.3, wet: 0 });
       const reverb     = new Tone.Reverb({ decay: 1.5, wet: 0 });
       reverb.generate().catch(() => {}); // Generate IR for reverb
@@ -225,6 +543,7 @@ class DawAudioEngine {
       const inputGain  = new Tone.Gain(1);
 
       // Gate di akhir prep — threshold -100 ≈ bypass (hampir semua sinyal lolos)
+      // PitchShift ditempatkan setelah compressor, sebelum chorus (standar industri)
       inputGain.chain(
         noiseGate,
         lowCut,
@@ -232,6 +551,7 @@ class DawAudioEngine {
         saturation,
         eq,
         compressor,
+        pitchShift,
         chorus,
         delay,
         reverb,
@@ -248,6 +568,7 @@ class DawAudioEngine {
         saturation,
         eq,
         compressor,
+        pitchShift,
         chorus,
         reverb,
         delay,
@@ -263,7 +584,7 @@ class DawAudioEngine {
   removeTrackNode(trackId) {
     const n = this.trackNodes.get(trackId);
     if (!n) return;
-    [n.inputGain, n.noiseGate, n.lowCut, n.guitarDist, n.saturation, n.eq, n.compressor, n.chorus, n.reverb, n.delay, n.channel, n.meter].forEach(x => {
+    [n.inputGain, n.noiseGate, n.lowCut, n.guitarDist, n.saturation, n.eq, n.compressor, n.pitchShift, n.chorus, n.reverb, n.delay, n.channel, n.meter].forEach(x => {
       try { x.disconnect(); } catch (e) { /* ignore */ }
       try { x.dispose(); } catch (e) { /* ignore */ }
     });
@@ -402,8 +723,32 @@ class DawAudioEngine {
       if (effects.reverb && n.reverb) {
         n.reverb.wet.value = effects.reverb.enabled ? clamp(effects.reverb.wet ?? 0.3, 0, 1) : 0;
       }
+
+      // 10. Pitch Shift / Transpose (Capo Digital)
+      if (effects.pitchShift && n.pitchShift) {
+        if (effects.pitchShift.enabled) {
+          n.pitchShift.pitch = clamp(effects.pitchShift.pitch ?? 0, -12, 12);
+          n.pitchShift.wet.value = clamp(effects.pitchShift.wet ?? 1, 0, 1);
+          if (effects.pitchShift.windowSize !== undefined) {
+            n.pitchShift.windowSize = clamp(effects.pitchShift.windowSize, 0.03, 0.15);
+          }
+        } else {
+          n.pitchShift.wet.value = 0;
+        }
+      }
     } catch (err) {
       console.error('setTrackEffects failed:', trackId, err);
+    }
+  }
+
+  /** Shortcut: set pitch shift semitones for a track in real-time. */
+  setTrackPitchShift(trackId, semitones) {
+    const n = this.trackNodes.get(trackId);
+    if (n && n.pitchShift) {
+      n.pitchShift.pitch = clamp(semitones, -12, 12);
+      if (semitones !== 0) {
+        n.pitchShift.wet.value = 1;
+      }
     }
   }
 
@@ -414,10 +759,25 @@ class DawAudioEngine {
     const audioId = 'audio_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     const arrayBuffer = await file.arrayBuffer();
     const ctx = Tone.getContext().rawContext;
-    const decoded = await ctx.decodeAudioData(arrayBuffer);
+    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
     const peaks = extractPeaks(decoded, 4096);
     this.audioBuffers.set(audioId, { buffer: decoded, peaks });
     return { audioId, name: file.name, duration: decoded.duration, sampleRate: decoded.sampleRate, channels: decoded.numberOfChannels, peaks };
+  }
+
+  async importAudioBuffer(audioBuffer, name = 'Recording') {
+    await this.init();
+    const audioId = 'audio_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const peaks = extractPeaks(audioBuffer, 4096);
+    this.audioBuffers.set(audioId, { buffer: audioBuffer, peaks });
+    return {
+      audioId,
+      name,
+      duration: audioBuffer.duration,
+      sampleRate: audioBuffer.sampleRate,
+      channels: audioBuffer.numberOfChannels,
+      peaks,
+    };
   }
 
   async loadAudioUrl(url, name) {
@@ -470,7 +830,9 @@ class DawAudioEngine {
     this._loopEnd       = loopEnd;
     this._startProjTime = position;
     this._startCtxTime  = Tone.now();
+    this._playNativeCtxTime = getNativeAudioContext()?.currentTime ?? this._startCtxTime;
     this._playing       = true;
+    this._playTracks    = tracks;
     this._skipTrackIds  = skipTrackIds ? new Set(skipTrackIds) : null;
     this._playOpts      = { loopEnabled, loopStart, loopEnd, bpm, skipTrackIds };
 
@@ -519,6 +881,12 @@ class DawAudioEngine {
         player.connect(node.inputGain);
 
         if (region.gain) player.volume.value = region.gain;
+        if (typeof player.fadeIn === 'number' || 'fadeIn' in player) {
+          player.fadeIn = region.fadeIn || 0;
+        }
+        if (typeof player.fadeOut === 'number' || 'fadeOut' in player) {
+          player.fadeOut = region.fadeOut || 0;
+        }
 
         if (region.startTime >= fromPosition) {
           const delay = region.startTime - fromPosition;
@@ -708,31 +1076,59 @@ class DawAudioEngine {
   // ── Input monitor (alat musik / mic → track) ────────────────────
 
   async startInputMonitor(trackId, inputId = 'default') {
+    await this._ensureAudioRunning();
     await this.init();
     if (!this.trackNodes.has(trackId)) this.createTrackNode(trackId);
     const node = this.trackNodes.get(trackId);
     if (!node) throw new Error('Track node tidak tersedia');
 
-    // Restart clean
     this.stopInputMonitor(trackId);
 
-    const mic = new Tone.UserMedia();
-    const meter = new Tone.Meter({ smoothing: 0.8 });
-
+    const baseAudio = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: { ideal: 2, min: 1 },
+    };
+    const constraints = { audio: { ...baseAudio } };
     if (inputId && inputId !== 'default') {
-      await mic.open(inputId);
-    } else {
-      await mic.open();
+      constraints.audio.deviceId = { exact: inputId };
     }
 
-    mic.connect(meter);
-    meter.connect(node.inputGain);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      if (inputId && inputId !== 'default') {
+        throw new Error('Gagal buka input yang dipilih. Pilih Line Valeton GP-200 (bukan Default/Communications), lalu Arm lagi.');
+      }
+      throw err;
+    }
+
+    const ctx = getNativeAudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const meter = new Tone.Meter({ smoothing: 0.65 });
+    // Direct to master — jangan lewat delay/reverb track (itu yang bikin gema).
+    const monitorGain = new Tone.Gain(0);
+
+    try {
+      source.connect(meter.input);
+    } catch (_) {
+      Tone.connect(source, meter);
+    }
+    meter.connect(monitorGain);
+    if (this.masterGain) {
+      monitorGain.connect(this.masterGain);
+    }
 
     this._inputMonitors.set(trackId, {
-      mic,
+      stream,
+      source,
       meter,
+      monitorGain,
       inputId: inputId || 'default',
-      stream: mic._stream || null,
+      livePeaks: [],
+      recording: false,
     });
     return true;
   }
@@ -740,11 +1136,14 @@ class DawAudioEngine {
   stopInputMonitor(trackId) {
     const m = this._inputMonitors.get(trackId);
     if (!m) return;
-    try { m.mic.disconnect(); } catch (_) { /* ignore */ }
-    try { m.meter.disconnect(); } catch (_) { /* ignore */ }
-    try { m.mic.close(); } catch (_) { /* ignore */ }
-    try { m.mic.dispose(); } catch (_) { /* ignore */ }
-    try { m.meter.dispose(); } catch (_) { /* ignore */ }
+    this._stopLivePeakCapture(m);
+    this._stopPcmCapture(m);
+    try { m.source?.disconnect(); } catch (_) { /* ignore */ }
+    try { m.meter?.disconnect(); } catch (_) { /* ignore */ }
+    try { m.monitorGain?.disconnect(); } catch (_) { /* ignore */ }
+    try { m.meter?.dispose(); } catch (_) { /* ignore */ }
+    try { m.monitorGain?.dispose(); } catch (_) { /* ignore */ }
+    try { m.stream?.getTracks().forEach(t => t.stop()); } catch (_) { /* ignore */ }
     this._inputMonitors.delete(trackId);
   }
 
@@ -754,13 +1153,8 @@ class DawAudioEngine {
 
   setInputMonitorAudible(trackId, audible) {
     const m = this._inputMonitors.get(trackId);
-    if (!m?.mic) return;
-    // Mute monitor ke speaker (tetap bisa rekam dari stream yang sama)
-    try {
-      m.mic.mute = !audible;
-    } catch (_) {
-      try { m.mic.volume.value = audible ? 0 : -Infinity; } catch (__) { /* ignore */ }
-    }
+    if (!m?.monitorGain) return;
+    m.monitorGain.gain.value = audible ? 1 : 0;
   }
 
   isInputMonitorActive(trackId) {
@@ -777,86 +1171,604 @@ class DawAudioEngine {
 
   getInputMonitorStream(trackId) {
     const m = this._inputMonitors.get(trackId);
-    return m?.stream || m?.mic?._stream || null;
+    return m?.stream || null;
+  }
+
+  getLiveRecordPeaks(trackId) {
+    const m = this._inputMonitors.get(trackId);
+    return m?.livePeaks || [];
+  }
+
+  _stopLivePeakCapture(m) {
+    if (!m) return;
+    m.recording = false;
+    if (m.peakRaf) {
+      cancelAnimationFrame(m.peakRaf);
+      m.peakRaf = 0;
+    }
+    if (m.liveAnalyser) {
+      try { m.source?.disconnect(m.liveAnalyser); } catch (_) { /* ignore */ }
+      try { m.liveAnalyser.disconnect(); } catch (_) { /* ignore */ }
+      m.liveAnalyser = null;
+    }
+  }
+
+  _startLivePeakCapture(m) {
+    this._stopLivePeakCapture(m);
+    const ctx = Tone.getContext().rawContext;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    try { m.source.connect(analyser); } catch (_) { /* ignore */ }
+    m.liveAnalyser = analyser;
+    m.livePeaks = [];
+    m.recording = true;
+    const data = new Float32Array(analyser.fftSize);
+    let frames = 0;
+    const tick = () => {
+      if (!m.recording) return;
+      m.peakRaf = requestAnimationFrame(tick);
+      frames += 1;
+      if (frames % 3 !== 0) return;
+      analyser.getFloatTimeDomainData(data);
+      let min = 0;
+      let max = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      m.livePeaks.push({ min, max });
+    };
+    m.peakRaf = requestAnimationFrame(tick);
+  }
+
+  async _decodeRecordBlob(blob) {
+    if (!blob || blob.size < 64) return null;
+    const ctx = Tone.getContext().rawContext;
+    const arr = await blob.arrayBuffer();
+    try {
+      return await ctx.decodeAudioData(arr.slice(0));
+    } catch (err) {
+      console.error('decode recording failed', err);
+      return null;
+    }
+  }
+
+  async _ensureAudioRunning() {
+    await Tone.start();
+    const ctx = Tone.getContext();
+    if (ctx.state !== 'running') {
+      await ctx.resume();
+    }
+    const raw = ctx.rawContext;
+    if (raw && raw.state !== 'running') {
+      await raw.resume();
+    }
+  }
+
+  async setOutputDevice(deviceId) {
+    const id = deviceId && deviceId !== 'default' ? deviceId : '';
+    this._outputDeviceId = id;
+    if (!this._sinkLocked) await this.applyOutputSink(id);
+    return true;
+  }
+
+  _sinkContexts() {
+    const list = [];
+    const add = (c) => {
+      if (c && typeof c.setSinkId === 'function' && !list.includes(c)) list.push(c);
+    };
+    add(getNativeAudioContext());
+    add(Tone.getContext()?.rawContext);
+    add(Tone.getContext()?._nativeAudioContext);
+    add(Tone.getDestination()?.context);
+    return list;
+  }
+
+  async applyOutputSink(deviceId) {
+    const id = deviceId && deviceId !== 'default' ? deviceId : '';
+    let ok = false;
+    for (const ctx of this._sinkContexts()) {
+      try {
+        await ctx.setSinkId(id);
+        ok = true;
+      } catch (err) {
+        console.warn('setSinkId failed', err);
+      }
+    }
+    return ok;
+  }
+
+  async _recordInputGroupIds(inputDeviceIds = []) {
+    let devices = [];
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch (_) {
+      devices = [];
+    }
+    const inputs = devices.filter(d => d.kind === 'audioinput');
+    const recordGroupIds = new Set();
+    const wantedIds = new Set((inputDeviceIds || []).filter(id => id && id !== 'default'));
+    for (const d of inputs) {
+      if (wantedIds.has(d.deviceId) && d.groupId) recordGroupIds.add(d.groupId);
+    }
+    for (const m of this._inputMonitors.values()) {
+      const track = m?.stream?.getAudioTracks?.()[0];
+      const settings = track?.getSettings?.() || {};
+      if (settings.groupId) recordGroupIds.add(settings.groupId);
+      if (settings.deviceId) {
+        const match = inputs.find(d => d.deviceId === settings.deviceId);
+        if (match?.groupId) recordGroupIds.add(match.groupId);
+      }
+    }
+    return { devices, recordGroupIds };
+  }
+
+  _isUnsafeOutput(out, recordGroupIds = new Set()) {
+    if (!out) return true;
+    const l = (out.label || '').toLowerCase();
+    if (isCommunicationsLabel(l)) return true;
+    if (/valeton|gp-?200/.test(l)) return true;
+    if (out.groupId && recordGroupIds.has(out.groupId)) return true;
+    return false;
+  }
+
+  async _findSafeOutput(inputDeviceIds = []) {
+    const { devices, recordGroupIds } = await this._recordInputGroupIds(inputDeviceIds);
+    const outputs = devices.filter(d => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default');
+    const safe = outputs
+      .filter(o => !this._isUnsafeOutput(o, recordGroupIds))
+      .sort((a, b) => outputDeviceRank(a.label) - outputDeviceRank(b.label));
+    return safe[0] || null;
+  }
+
+  _disconnectSpeakers() {
+    if (!this.speakerGate) return;
+    try { this.speakerGate.disconnect(); } catch (_) { /* ignore */ }
+    this.speakerGate.gain.value = 0;
+  }
+
+  _connectSpeakers() {
+    if (!this.speakerGate) return;
+    this.speakerGate.gain.value = 1;
+    try { this.speakerGate.connect(Tone.getDestination()); } catch (_) { /* already connected */ }
+  }
+
+  _ensurePlaybackToSpeakers() {
+    if (!this.outputTap || !this.speakerGate) return;
+    try { this.outputTap.connect(this.speakerGate); } catch (_) { /* already connected */ }
+    this._connectSpeakers();
+  }
+
+  _tapNativeNode() {
+    const tap = this.outputTap;
+    if (!tap) return null;
+    return tap.output || tap;
+  }
+
+  async isolatePlaybackFromInputs() {
+    // Seperti Studio One: iringan tetap ke output yang sama (GP-200 / headphone).
+    this._ensurePlaybackToSpeakers();
+    this._sinkLocked = false;
+    this._restoreSinkId = undefined;
+    return { soundcardMonitor: true };
+  }
+
+  async restorePlaybackOutput() {
+    this._ensurePlaybackToSpeakers();
+    this._sinkLocked = false;
+    this._restoreSinkId = undefined;
+    for (const m of this._inputMonitors.values()) {
+      if (!m?.monitorGain || !this.masterGain) continue;
+      try { m.monitorGain.disconnect(); } catch (_) { /* ignore */ }
+      try { m.monitorGain.connect(this.masterGain); } catch (_) { /* ignore */ }
+    }
   }
 
   // ── Recording ───────────────────────────────────────────────────
 
-  async startRecording(armedTracksData = []) {
-    await this.init();
-    this._mediaRecorders = {};
-    this._recordChunks = {};
-    this._recordStreams = {};
-
-    let mimeType = 'audio/webm;codecs=opus';
-    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
-    else if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
-
-    for (const trackData of armedTracksData) {
-      const { trackId, inputId } = trackData;
-      this._recordChunks[trackId] = [];
-
-      try {
-        // Pakai stream monitor yang sudah terbuka (alat musik sudah colok & armed)
-        let stream = this.getInputMonitorStream(trackId);
-        let ownsStream = false;
-
-        if (!stream) {
-          const audioConstraints = {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-          };
-          if (inputId && inputId !== 'default') {
-            audioConstraints.deviceId = { exact: inputId };
-          }
-          stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
-          ownsStream = true;
-          // Pastikan monitor ikut nyala saat rekam
-          try {
-            await this.startInputMonitor(trackId, inputId || 'default');
-            const monitored = this.getInputMonitorStream(trackId);
-            if (monitored) {
-              stream.getTracks().forEach(t => t.stop());
-              stream = monitored;
-              ownsStream = false;
-            }
-          } catch (_) { /* keep standalone stream */ }
-        }
-
-        this._recordStreams[trackId] = { stream, ownsStream };
-
-        const recorder = new MediaRecorder(stream, { mimeType });
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) this._recordChunks[trackId].push(e.data);
-        };
-        recorder.onstop = () => {
-          const blob = new Blob(this._recordChunks[trackId], { type: mimeType });
-          const entry = this._recordStreams[trackId];
-          if (entry?.ownsStream) {
-            entry.stream?.getTracks().forEach(t => t.stop());
-          }
-          delete this._recordStreams[trackId];
-          if (this.onRecordingDone) this.onRecordingDone(trackId, blob);
-        };
-
-        this._mediaRecorders[trackId] = recorder;
-        recorder.start(100);
-      } catch (err) {
-        console.error(`Failed to start recording for track ${trackId}:`, err);
-        throw err;
+  _startMixReferenceCapture(ctx) {
+    this._stopMixReferenceCapture();
+    this._mixLeft = [];
+    this._mixRight = [];
+    this._lastMixBuffer = null;
+    this._ensurePlaybackToSpeakers();
+    if (!this.outputTap || !ctx || !isNativeAudioContext(ctx)) return;
+    try {
+      const recNode = new AudioWorkletNode(ctx, 'jagat-recorder', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [2],
+        channelCount: 2,
+        channelCountMode: 'explicit',
+        channelInterpretation: 'speakers',
+      });
+      recNode.port.onmessage = (e) => {
+        if (!e.data?.l) return;
+        this._mixLeft.push(e.data.l);
+        this._mixRight.push(e.data.r || e.data.l);
+      };
+      if (!ctx._jagatWorkletKeepAlive) {
+        ctx._jagatWorkletKeepAlive = ctx.createMediaStreamDestination();
       }
+      const tap = this._tapNativeNode();
+      try {
+        tap.connect(recNode);
+      } catch (_) {
+        try { this.outputTap.connect(recNode); } catch (err) { console.warn(err); }
+      }
+      recNode.connect(ctx._jagatWorkletKeepAlive);
+      recNode.port.postMessage('start');
+      this._mixRecNode = recNode;
+      this._ensurePlaybackToSpeakers();
+    } catch (err) {
+      console.warn('mix reference capture failed', err);
+      this._mixRecNode = null;
+      this._ensurePlaybackToSpeakers();
     }
   }
 
-  stopRecording() {
-    for (const trackId in this._mediaRecorders) {
-      const recorder = this._mediaRecorders[trackId];
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.stop();
+  _stopMixReferenceCapture() {
+    const rec = this._mixRecNode;
+    this._mixRecNode = null;
+    if (!rec) {
+      this._ensurePlaybackToSpeakers();
+      return;
+    }
+    try { rec.port.postMessage('stop'); } catch (_) { /* ignore */ }
+    const tap = this._tapNativeNode();
+    try { tap?.disconnect(rec); } catch (_) { /* ignore */ }
+    try { rec.disconnect(); } catch (_) { /* ignore */ }
+    this._ensurePlaybackToSpeakers();
+  }
+
+  _mixChunksToBuffer(ctx) {
+    const leftChunks = this._mixLeft || [];
+    const rightChunks = this._mixRight || [];
+    const total = leftChunks.reduce((n, c) => n + c.length, 0);
+    if (total < 64) return null;
+    const sr = ctx?.sampleRate || getNativeAudioContext()?.sampleRate || 44100;
+    const buffer = (ctx && typeof ctx.createBuffer === 'function')
+      ? ctx.createBuffer(1, total, sr)
+      : new AudioBuffer({ numberOfChannels: 1, length: total, sampleRate: sr });
+    const dest = buffer.getChannelData(0);
+    let offset = 0;
+    for (let i = 0; i < leftChunks.length; i++) {
+      const l = leftChunks[i];
+      const r = rightChunks[i] || l;
+      for (let s = 0; s < l.length; s++) dest[offset + s] = (l[s] + (r[s] ?? l[s])) * 0.5;
+      offset += l.length;
+    }
+    this._mixLeft = [];
+    this._mixRight = [];
+    return buffer;
+  }
+
+  _finishRecordedBuffer(buffer, stream, mediaRecorder) {
+    if (!buffer) return buffer;
+    const liveMix = this._lastMixBuffer;
+    if (liveMix) {
+      buffer = isolateInstrumentChannel(buffer, liveMix);
+      buffer = mixMinusBleed(buffer, liveMix);
+      buffer = this._alignRecordedBuffer(buffer, stream, mediaRecorder);
+    } else {
+      buffer = this._alignRecordedBuffer(buffer, stream, mediaRecorder);
+      const mix = this._renderBackingMix(buffer.sampleRate, buffer.duration);
+      buffer = isolateInstrumentChannel(buffer, mix);
+      buffer = mixMinusBleed(buffer, mix);
+    }
+    return polishRecordedBuffer(buffer);
+  }
+
+  _renderBackingMix(sampleRate, durationSec) {
+    const tracks = this._playTracks || [];
+    const skip = this._skipTrackIds || new Set();
+    const start = this._startProjTime || 0;
+    if (!tracks.length || durationSec < 0.05) return null;
+    const length = Math.max(64, Math.ceil(durationSec * sampleRate));
+    const dest = new Float32Array(length);
+    let wrote = false;
+
+    for (const track of tracks) {
+      if (!track || skip.has(track.id) || track.mute) continue;
+      const vol = dbToGain(clamp(track.volume ?? 0, -60, 12));
+      if (vol < 0.0008) continue;
+      for (const region of (track.regions || [])) {
+        const audio = this.audioBuffers.get(region.audioId);
+        const buf = audio?.buffer;
+        if (!buf) continue;
+        const ch0 = buf.getChannelData(0);
+        const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : ch0;
+        const srcSr = buf.sampleRate;
+        const mixStart = Math.max(region.startTime, start);
+        const mixEnd = Math.min(region.startTime + region.duration, start + durationSec);
+        if (mixEnd <= mixStart) continue;
+        const i0 = Math.floor((mixStart - start) * sampleRate);
+        const i1 = Math.min(length, Math.ceil((mixEnd - start) * sampleRate));
+        for (let i = i0; i < i1; i++) {
+          const t = start + i / sampleRate;
+          const srcI = Math.floor(((region.offset || 0) + (t - region.startTime)) * srcSr);
+          if (srcI < 0 || srcI >= ch0.length) continue;
+          dest[i] += (ch0[srcI] + ch1[srcI]) * 0.5 * vol;
+          wrote = true;
+        }
       }
     }
+    if (!wrote) return null;
+    const out = new AudioBuffer({ numberOfChannels: 1, length, sampleRate });
+    out.getChannelData(0).set(dest);
+    return out;
+  }
+
+  _stopPcmCapture(m) {
+    if (!m) return;
+    try { m.recNode?.port.postMessage('stop'); } catch (_) { /* ignore */ }
+    try { m.source?.disconnect(m.recNode); } catch (_) { /* ignore */ }
+    try { m.recSplit?.disconnect(); } catch (_) { /* ignore */ }
+    try { m.recNode?.disconnect(); } catch (_) { /* ignore */ }
+    try { m.recSilent?.disconnect(); } catch (_) { /* ignore */ }
+    m.recNode = null;
+    m.recSplit = null;
+    m.recSilent = null;
+  }
+
+  _pcmChunksToBuffer(m, ctx) {
+    const leftChunks = m.pcmLeft || [];
+    const rightChunks = m.pcmRight || [];
+    const total = leftChunks.reduce((n, c) => n + c.length, 0);
+    if (total < 64) return null;
+    const stereo = rightChunks.length > 0;
+    const sr = ctx?.sampleRate || getNativeAudioContext()?.sampleRate || 44100;
+    const buffer = (ctx && typeof ctx.createBuffer === 'function')
+      ? ctx.createBuffer(stereo ? 2 : 1, total, sr)
+      : new AudioBuffer({ numberOfChannels: stereo ? 2 : 1, length: total, sampleRate: sr });
+    const left = buffer.getChannelData(0);
+    const right = stereo ? buffer.getChannelData(1) : null;
+    let offset = 0;
+    for (let i = 0; i < leftChunks.length; i++) {
+      left.set(leftChunks[i], offset);
+      if (right) right.set(rightChunks[i] || leftChunks[i], offset);
+      offset += leftChunks[i].length;
+    }
+    return buffer;
+  }
+
+  getRoundTripLatencySec(stream = null, mediaRecorder = false) {
+    const ctx = getNativeAudioContext();
+    const sr = ctx?.sampleRate || 48000;
+    const base = Number(ctx?.baseLatency) || 0;
+    let out = Number(ctx?.outputLatency) || 0;
+    if (out <= 0 && ctx && typeof ctx.getOutputTimestamp === 'function') {
+      try {
+        const ts = ctx.getOutputTimestamp();
+        if (ts && typeof ts.contextTime === 'number') {
+          const est = ctx.currentTime - ts.contextTime;
+          if (est > 0 && est < 0.5) out = est;
+        }
+      } catch (_) { /* ignore */ }
+    }
+    let input = 0;
+    try {
+      const lat = stream?.getAudioTracks?.()[0]?.getSettings?.()?.latency;
+      if (typeof lat === 'number' && lat > 0) input = lat;
+    } catch (_) { /* ignore */ }
+    if (input <= 0) input = base > 0 ? base : 0.012;
+    if (out <= 0) out = base > 0 ? base : 0.02;
+
+    const quantum = 256 / sr;
+    const codec = mediaRecorder ? 0.035 : 0;
+    const mismatchPad = this._sinkLocked ? 0.02 : 0;
+    const reported = base + out + input + quantum + codec + mismatchPad;
+    // Windows WASAPI shared mode often under-reports; keep a small floor.
+    return clamp(Math.max(reported, 0.06), 0.035, 0.28);
+  }
+
+  getRecordCompensationSec() {
+    const recT = this._recordNativeCtxTime;
+    const playT = this._playNativeCtxTime;
+    const preRoll = (typeof recT === 'number' && typeof playT === 'number')
+      ? Math.max(0, playT - recT)
+      : 0;
+    return preRoll + this.getRoundTripLatencySec(null, this._recordUsedMediaRecorder);
+  }
+
+  _alignRecordedBuffer(buffer, stream, mediaRecorder) {
+    if (!buffer) return buffer;
+    const recT = this._recordNativeCtxTime;
+    const playT = this._playNativeCtxTime;
+    const preRoll = (typeof recT === 'number' && typeof playT === 'number')
+      ? Math.max(0, playT - recT)
+      : 0;
+    const rtl = this.getRoundTripLatencySec(stream, mediaRecorder);
+    return trimAudioBufferStart(buffer, preRoll + rtl);
+  }
+
+  async prepareRecording(armedTracksData = []) {
+    await this._ensureAudioRunning();
+    await this.init();
     this._mediaRecorders = {};
+    this._recordChunks = {};
+    this._recordingTrackIds = [];
+    this._pcmTrackIds = [];
+    this._recordUsedMediaRecorder = false;
+    this._recordNativeCtxTime = null;
+    this._lastMixBuffer = null;
+
+    for (const [id] of this._inputMonitors) {
+      this.setInputMonitorAudible(id, false);
+    }
+    for (const m of this._inputMonitors.values()) {
+      try { m.monitorGain?.disconnect(); } catch (_) { /* ignore */ }
+    }
+
+    for (const trackData of armedTracksData) {
+      const { trackId, inputId } = trackData;
+      if (!this._inputMonitors.has(trackId)) {
+        await this.startInputMonitor(trackId, inputId || 'default');
+      }
+      this.setInputMonitorAudible(trackId, false);
+      const m = this._inputMonitors.get(trackId);
+      try { m?.monitorGain?.disconnect(); } catch (_) { /* ignore */ }
+    }
+
+    const isolation = await this.isolatePlaybackFromInputs(
+      (armedTracksData || []).map(t => t.inputId)
+    );
+
+    const nativeCtx = getNativeAudioContext();
+    let workletOk = false;
+    if (isNativeAudioContext(nativeCtx)) {
+      try {
+        await ensureRecorderWorklet(nativeCtx);
+        workletOk = true;
+      } catch (err) {
+        console.warn('PCM worklet unavailable, fallback MediaRecorder', err);
+      }
+    }
+
+    this._recPrep = { armedTracksData, isolation, nativeCtx, workletOk };
+    return isolation;
+  }
+
+  beginCapture() {
+    const prep = this._recPrep;
+    if (!prep) throw new Error('Recording belum disiapkan');
+    this._recPrep = null;
+    const { armedTracksData, nativeCtx, workletOk } = prep;
+    this._recordNativeCtxTime = getNativeAudioContext()?.currentTime ?? Tone.now();
+    this._startMixReferenceCapture(nativeCtx);
+
+    const startMediaRecorder = (trackId, m) => {
+      const recStream = isolatedAudioStream(m.stream) || m.stream;
+      let mimeType = '';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=pcm')) mimeType = 'audio/webm;codecs=pcm';
+        else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mimeType = 'audio/webm;codecs=opus';
+        else if (MediaRecorder.isTypeSupported('audio/webm')) mimeType = 'audio/webm';
+      }
+      const recOpts = mimeType ? { mimeType, audioBitsPerSecond: 256000 } : { audioBitsPerSecond: 256000 };
+      let recorder;
+      try {
+        recorder = new MediaRecorder(recStream, recOpts);
+      } catch (_) {
+        recorder = new MediaRecorder(recStream);
+      }
+      this._recordChunks[trackId] = [];
+      this._recordUsedMediaRecorder = true;
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) this._recordChunks[trackId].push(e.data);
+      };
+      recorder.onstop = async () => {
+        this._stopLivePeakCapture(m);
+        const chunks = this._recordChunks[trackId] || [];
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        let buffer = await this._decodeRecordBlob(blob);
+        if (buffer) buffer = this._finishRecordedBuffer(buffer, m.stream, true);
+        if (this.onRecordingDone) this.onRecordingDone(trackId, buffer);
+      };
+      recorder.start();
+      this._mediaRecorders[trackId] = recorder;
+    };
+
+    for (const trackData of armedTracksData) {
+      const { trackId, inputId } = trackData;
+      if (!this._inputMonitors.has(trackId)) {
+        throw new Error('Input soundcard tidak aktif. Pilih Line Valeton, Arm (●), lalu Record.');
+      }
+      const m = this._inputMonitors.get(trackId);
+      const liveTrack = m?.stream?.getAudioTracks?.()[0];
+      if (!m?.stream || !liveTrack || liveTrack.readyState !== 'live') {
+        throw new Error('Input soundcard tidak aktif. Pilih Line Valeton, Arm (●), lalu Record.');
+      }
+
+      this._recordingTrackIds.push(trackId);
+
+      const nodeCtx = getNativeAudioContext(m.source?.context) || nativeCtx;
+      if (workletOk && m.source && isNativeAudioContext(nodeCtx)) {
+        try {
+          m.pcmLeft = [];
+          m.pcmRight = [];
+          m.livePeaks = [];
+          const recNode = new AudioWorkletNode(nodeCtx, 'jagat-recorder', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [2],
+            channelCount: 2,
+            channelCountMode: 'explicit',
+            channelInterpretation: 'discrete',
+          });
+          recNode.port.onmessage = (e) => {
+            if (!e.data?.l) return;
+            m.pcmLeft.push(e.data.l);
+            m.pcmRight.push(e.data.r || e.data.l);
+            const l = e.data.l;
+            const r = e.data.r || e.data.l;
+            let min = 0;
+            let max = 0;
+            for (let i = 0; i < l.length; i += 16) {
+              const v = (l[i] + (r[i] ?? l[i])) * 0.5;
+              if (v < min) min = v;
+              if (v > max) max = v;
+            }
+            m.livePeaks.push({ min, max });
+          };
+          if (!nodeCtx._jagatWorkletKeepAlive) {
+            nodeCtx._jagatWorkletKeepAlive = nodeCtx.createMediaStreamDestination();
+          }
+          m.source.connect(recNode);
+          recNode.connect(nodeCtx._jagatWorkletKeepAlive);
+          recNode.port.postMessage('start');
+          m.recNode = recNode;
+          this._pcmTrackIds.push(trackId);
+          continue;
+        } catch (err) {
+          console.warn('AudioWorkletNode failed, fallback MediaRecorder', err);
+        }
+      }
+
+      this._startLivePeakCapture(m);
+      startMediaRecorder(trackId, m);
+    }
+  }
+
+  async startRecording(armedTracksData = []) {
+    const isolation = await this.prepareRecording(armedTracksData);
+    this.beginCapture();
+    return isolation;
+  }
+
+  stopRecording() {
+    this._recPrep = null;
+    const ctx = getNativeAudioContext();
+    this._stopMixReferenceCapture();
+    this._lastMixBuffer = this._mixChunksToBuffer(ctx);
+
+    const pcmIds = this._pcmTrackIds || [];
+    this._pcmTrackIds = [];
+
+    for (const trackId of pcmIds) {
+      const m = this._inputMonitors.get(trackId);
+      this._stopLivePeakCapture(m);
+      this._stopPcmCapture(m);
+      let buffer = this._pcmChunksToBuffer(m, ctx);
+      if (buffer) buffer = this._finishRecordedBuffer(buffer, m?.stream, false);
+      if (m) {
+        m.pcmLeft = [];
+        m.pcmRight = [];
+      }
+      if (this.onRecordingDone) this.onRecordingDone(trackId, buffer);
+    }
+
+    const recorders = this._mediaRecorders || {};
+    this._mediaRecorders = {};
+    this._recordingTrackIds = [];
+    for (const trackId of Object.keys(recorders)) {
+      const recorder = recorders[trackId];
+      if (recorder && recorder.state !== 'inactive') {
+        try { recorder.stop(); } catch (err) { console.error(err); }
+      }
+    }
+    void this.restorePlaybackOutput();
   }
 
   // ── Bounce / Export ─────────────────────────────────────────────
@@ -952,6 +1864,11 @@ class DawAudioEngine {
 
         const source = offline.createBufferSource();
         source.buffer = audioData.buffer;
+
+        // Pitch Shift / Transpose for offline bounce (use detune in cents: 100 cents = 1 semitone)
+        if (track.effects?.pitchShift?.enabled && track.effects.pitchShift.pitch !== 0) {
+          source.detune.value = (track.effects.pitchShift.pitch ?? 0) * 100;
+        }
 
         const regGain = offline.createGain();
         regGain.gain.value = dbToGain(region.gain || 0);

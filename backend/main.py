@@ -189,10 +189,12 @@ else:
 UPLOAD_DIR = os.path.join(app_data, "uploads")
 OUTPUT_DIR = os.path.join(app_data, "separated")
 LYRICS_CACHE_DIR = os.path.join(app_data, "lyrics_cache")
+CHORDS_CACHE_DIR = os.path.join(app_data, "chords_cache")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LYRICS_CACHE_DIR, exist_ok=True)
+os.makedirs(CHORDS_CACHE_DIR, exist_ok=True)
 
 # Keep track of status
 separation_status = {}
@@ -228,6 +230,37 @@ def _stems_ready(file_id: str) -> bool:
     if not os.path.isdir(stem_dir):
         return False
     return all(os.path.exists(os.path.join(stem_dir, name)) for name in STEM_NAMES)
+
+
+def _detect_and_store_musical_key(file_id: str, force: bool = False) -> Optional[dict]:
+    """Analyze stems for musical key and persist it on project meta."""
+    from key_detector import DETECTOR_VERSION
+    meta = _read_project_meta(file_id) or {"file_id": file_id}
+    existing = meta.get("musical_key")
+    stale = not isinstance(existing, dict) or existing.get("version") != DETECTOR_VERSION
+    if (
+        not force
+        and not stale
+        and isinstance(existing, dict)
+        and ("key" in existing or existing.get("error"))
+    ):
+        return existing if existing.get("key") else None
+    stem_dir = _stems_dir_for_id(file_id)
+    if not os.path.isdir(stem_dir):
+        return None
+    try:
+        from key_detector import detect_key_from_stem_dir
+        info = detect_key_from_stem_dir(stem_dir)
+    except Exception as e:
+        print(f"musical key detect failed for {file_id}: {e}")
+        info = None
+    if not info or not info.get("key"):
+        meta["musical_key"] = {"key": None, "error": True}
+        _write_project_meta(file_id, meta)
+        return None
+    meta["musical_key"] = info
+    _write_project_meta(file_id, meta)
+    return info
 
 
 def _ensure_project_meta(file_id: str, original_name: Optional[str] = None) -> dict:
@@ -624,13 +657,19 @@ def run_demucs(filepath: str, file_id: str):
             pass
         
         if process.returncode == 0:
-            separation_status[file_id]["status"] = "done"
             separation_status[file_id]["progress"] = 100
-            separation_status[file_id]["eta"] = "00:00"
+            separation_status[file_id]["eta"] = "Menganalisis nada dasar..."
+            musical_key = _detect_and_store_musical_key(file_id, force=True)
             meta = _read_project_meta(file_id) or {"file_id": file_id}
             meta["status"] = "ready"
             meta["separated_at"] = datetime.now(timezone.utc).isoformat()
+            if musical_key:
+                meta["musical_key"] = musical_key
             _write_project_meta(file_id, meta)
+            separation_status[file_id]["status"] = "done"
+            separation_status[file_id]["eta"] = "00:00"
+            if musical_key:
+                separation_status[file_id]["musical_key"] = musical_key
         else:
             with open(error_log_path, "w", encoding="utf-8") as f:
                 f.write(f"Demucs failed with returncode: {process.returncode}\n")
@@ -733,6 +772,13 @@ async def get_project(file_id: str, current_user: dict = Depends(get_current_use
     meta = _read_project_meta(file_id) or {"file_id": file_id, "display_name": file_id}
     meta["file_id"] = file_id
     meta["status"] = "ready"
+    existing = meta.get("musical_key")
+    from key_detector import DETECTOR_VERSION
+    key_stale = not isinstance(existing, dict) or existing.get("version") != DETECTOR_VERSION
+    if key_stale or not (isinstance(existing, dict) and (existing.get("key") or existing.get("error"))):
+        key_info = _detect_and_store_musical_key(file_id, force=key_stale)
+        if key_info:
+            meta["musical_key"] = key_info
     return meta
 
 
@@ -1274,6 +1320,50 @@ def _finalize_karaoke_save(export_path: str, suggested_name: str, warning: str =
     return payload
 
 
+@app.post("/playlist/detect-key")
+def playlist_detect_key(
+    audio: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Detect musical key from a short playlist mix snippet (no stem split)."""
+    src_name = audio.filename or "track.mp3"
+    ext = os.path.splitext(src_name)[1].lower() or ".mp3"
+    if ext not in (".wav", ".mp3", ".m4a", ".mp4", ".ogg", ".flac", ".webm", ".aac"):
+        return JSONResponse(status_code=400, content={"found": False, "message": "Format audio tidak didukung"})
+
+    work = tempfile.mkdtemp(prefix="playlist_key_")
+    in_path = os.path.join(work, f"mix{ext}")
+    try:
+        max_bytes = 3 * 1024 * 1024
+        written = 0
+        with open(in_path, "wb") as f:
+            while written < max_bytes:
+                chunk = audio.file.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+        if not os.path.getsize(in_path):
+            return JSONResponse(status_code=400, content={"found": False, "message": "File audio kosong"})
+
+        from key_detector import detect_key_from_mix_file
+        info = detect_key_from_mix_file(in_path)
+        if not info or not info.get("key"):
+            return {"found": False, "message": "Nada dasar tidak terdeteksi"}
+        return {
+            "found": True,
+            "key": info.get("key"),
+            "scale": info.get("scale") or "major",
+            "label": info.get("label") or "",
+            "confidence": info.get("confidence"),
+        }
+    except Exception as e:
+        print(f"[playlist/detect-key] {e}")
+        return JSONResponse(status_code=500, content={"found": False, "message": "Gagal menganalisis nada dasar"})
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 @app.post("/playlist/karaoke-video")
 async def create_playlist_karaoke_video(
     video: UploadFile = File(...),
@@ -1500,7 +1590,7 @@ async def download_tab(filename: str):
 # ============================================
 # LYRICS ROUTES
 # ============================================
-from lyrics_fetcher import get_or_fetch_lyrics, load_cached_lyrics, cache_base_name, search_lyrics_candidates, apply_lyrics_for_track
+from lyrics_fetcher import get_or_fetch_lyrics, load_cached_lyrics, cache_base_name, search_lyrics_candidates, apply_lyrics_for_track, parse_track_name
 
 class LyricsFetchRequest(BaseModel):
     track_name: str
@@ -1870,6 +1960,12 @@ def run_yt2mp3_download(url: str, job_id: str, media_type: str = "mp3"):
             yt2mp3_status[job_id]["error"] = f"Gagal mengunduh {kind}: {error_msg}"
 
 from tab_scraper import search_tab_data
+from chord_fetcher import (
+    get_or_fetch_chords,
+    load_cached_chords,
+    search_chord_candidates,
+    apply_chords_for_track,
+)
 
 class TabSearchRequest(BaseModel):
     query: str
@@ -1887,6 +1983,192 @@ async def search_tab_online(request: TabSearchRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChordsFetchRequest(BaseModel):
+    track_name: str
+    refresh: bool = False
+
+
+class ChordsSearchRequest(BaseModel):
+    artist: str = ""
+    title: str = ""
+    query: str = ""
+
+
+class ChordsSelectRequest(BaseModel):
+    track_name: str
+    url: str
+    source: str = ""
+    type: str = "Chords"
+    song_name: str = ""
+    artist_name: str = ""
+    id: str = ""
+
+
+@app.post("/chords/fetch")
+def chords_fetch(req: ChordsFetchRequest, current_user: dict = Depends(get_current_user)):
+    track_name = req.track_name.strip()
+    if not track_name:
+        raise HTTPException(status_code=400, detail="Nama lagu tidak valid")
+    result = get_or_fetch_chords(CHORDS_CACHE_DIR, track_name, req.refresh)
+    if not result.get("found"):
+        return {
+            "found": False,
+            "message": result.get("message") or "Chord/tab tidak ditemukan di internet",
+            "search_artist": result.get("search_artist", ""),
+            "search_title": result.get("search_title", ""),
+        }
+    return {
+        "found": True,
+        "saved": result.get("saved", False),
+        "from_cache": result.get("from_cache", False),
+        "content": result.get("content"),
+        "type": result.get("type") or "Chords",
+        "source": result.get("source", ""),
+        "source_name": result.get("source_name", ""),
+        "source_url": result.get("source_url", ""),
+        "song_name": result.get("song_name", ""),
+        "artist_name": result.get("artist_name", ""),
+        "rating": result.get("rating"),
+        "search_artist": result.get("search_artist", ""),
+        "search_title": result.get("search_title", ""),
+    }
+
+
+@app.post("/chords/search")
+def chords_search(req: ChordsSearchRequest, current_user: dict = Depends(get_current_user)):
+    artist = req.artist.strip()
+    title = req.title.strip()
+    query = req.query.strip()
+    if not query and not title and not artist:
+        raise HTTPException(status_code=400, detail="Isi penyanyi, judul, atau kata kunci pencarian")
+    results = search_chord_candidates(artist, title, query or None)
+    return {"results": results, "count": len(results)}
+
+
+@app.post("/chords/select")
+def chords_select(req: ChordsSelectRequest, current_user: dict = Depends(get_current_user)):
+    track_name = req.track_name.strip()
+    if not track_name:
+        raise HTTPException(status_code=400, detail="Nama lagu tidak valid")
+    if not req.url.strip():
+        raise HTTPException(status_code=400, detail="Sumber chord tidak valid")
+    result = apply_chords_for_track(
+        CHORDS_CACHE_DIR,
+        track_name,
+        {
+            "id": req.id,
+            "url": req.url.strip(),
+            "source": req.source.strip() or (
+                "ultimate-guitar" if "ultimate-guitar" in req.url else "guitartabs"
+            ),
+            "type": req.type or "Chords",
+            "song_name": req.song_name,
+            "artist_name": req.artist_name,
+        },
+    )
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail=result.get("message") or "Chord tidak ditemukan")
+    return {
+        "found": True,
+        "content": result.get("content"),
+        "type": result.get("type") or "Chords",
+        "source": result.get("source", ""),
+        "source_name": result.get("source_name", ""),
+        "source_url": result.get("source_url", ""),
+        "song_name": result.get("song_name", ""),
+        "artist_name": result.get("artist_name", ""),
+        "rating": result.get("rating"),
+        "search_artist": result.get("search_artist", ""),
+        "search_title": result.get("search_title", ""),
+    }
+
+
+@app.get("/chords/download")
+def chords_download(track_name: str, current_user: dict = Depends(get_current_user)):
+    cached = load_cached_chords(CHORDS_CACHE_DIR, track_name.strip())
+    if not cached:
+        return JSONResponse(status_code=404, content={"message": "Chord belum tersimpan"})
+    filename = f"{cache_base_name(track_name.strip())}.txt"
+    from fastapi.responses import Response
+    header = ""
+    if cached.get("artist_name") or cached.get("song_name"):
+        header = f"{cached.get('artist_name', '')} - {cached.get('song_name', '')}\n"
+        if cached.get("source_url"):
+            header += f"{cached.get('source_url')}\n"
+        header += "\n"
+    return Response(
+        content=header + (cached.get("content") or ""),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+class SongbookLookupRequest(BaseModel):
+    query: str
+
+
+@app.post("/songbook/lookup")
+def songbook_lookup(req: SongbookLookupRequest, current_user: dict = Depends(get_current_user)):
+    """Fetch lyrics + chords/tabs by song name, without a local playlist file."""
+    query = (req.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Ketik penyanyi dan/atau judul lagu")
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _chords():
+        return get_or_fetch_chords(CHORDS_CACHE_DIR, query, False)
+
+    def _lyrics():
+        return get_or_fetch_lyrics(LYRICS_CACHE_DIR, query, None, False)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ch_f = pool.submit(_chords)
+        ly_f = pool.submit(_lyrics)
+        chords = ch_f.result()
+        lyrics = ly_f.result()
+
+    artist, title = parse_track_name(query)
+    lyrics_out = None
+    if lyrics.get("found") and lyrics.get("content"):
+        lyrics_out = {
+            "found": True,
+            "format": lyrics.get("format"),
+            "content": lyrics.get("content"),
+            "source": lyrics.get("source", ""),
+            "from_cache": lyrics.get("from_cache", False),
+            "search_artist": lyrics.get("search_artist") or artist,
+            "search_title": lyrics.get("search_title") or title,
+        }
+    chords_out = None
+    if chords.get("found") and chords.get("content"):
+        chords_out = {
+            "found": True,
+            "content": chords.get("content"),
+            "type": chords.get("type") or "Chords",
+            "source": chords.get("source", ""),
+            "source_name": chords.get("source_name", ""),
+            "source_url": chords.get("source_url", ""),
+            "song_name": chords.get("song_name") or title,
+            "artist_name": chords.get("artist_name") or artist,
+            "rating": chords.get("rating"),
+            "from_cache": chords.get("from_cache", False),
+            "search_artist": chords.get("search_artist") or artist,
+            "search_title": chords.get("search_title") or title,
+        }
+
+    return {
+        "query": query,
+        "search_artist": (lyrics_out or chords_out or {}).get("search_artist") or artist,
+        "search_title": (lyrics_out or chords_out or {}).get("search_title") or title,
+        "lyrics": lyrics_out,
+        "chords": chords_out,
+        "lyrics_message": None if lyrics_out else (lyrics.get("message") or "Lirik tidak ditemukan"),
+        "chords_message": None if chords_out else (chords.get("message") or "Chord/tab tidak ditemukan"),
+    }
+
 
 class SearchRequest(BaseModel):
     query: str

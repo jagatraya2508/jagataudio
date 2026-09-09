@@ -24,6 +24,7 @@ frontend/dist/
 build/pyinstaller_output/
 build/pyinstaller_work/
 build/installer_output/
+build/portable_output/
 build/LICENSE.txt
 dist/
 

@@ -12,6 +12,14 @@ set FRONTEND_DIR=%ROOT_DIR%\frontend
 set BUILD_DIR=%~dp0
 set OUTPUT_DIR=%BUILD_DIR%\pyinstaller_output
 set INSTALLER_OUTPUT=%BUILD_DIR%\installer_output
+set PORTABLE_OUTPUT=%BUILD_DIR%\portable_output
+
+:: Read version from backend/version.py (APP_VERSION = "x.y.z")
+for /f "tokens=2 delims==" %%A in ('findstr APP_VERSION "%BACKEND_DIR%\version.py"') do set APP_VERSION=%%A
+set APP_VERSION=%APP_VERSION: =%
+set APP_VERSION=%APP_VERSION:"=%
+echo   Versi: %APP_VERSION%
+echo.
 
 :: Step 0: Check prerequisites
 echo [Step 0] Memeriksa prasyarat...
@@ -72,7 +80,7 @@ if exist "%BUILD_DIR%\obf_backend" rmdir /s /q "%BUILD_DIR%\obf_backend"
 mkdir "%BUILD_DIR%\obf_backend"
 pushd "%BACKEND_DIR%"
 call "%BACKEND_DIR%\venv\Scripts\activate.bat"
-pyarmor gen -O "%BUILD_DIR%\obf_backend" auth.py database.py license_manager.py lyrics_fetcher.py tab_generator.py tab_scraper.py version.py
+pyarmor gen -O "%BUILD_DIR%\obf_backend" auth.py database.py license_manager.py lyrics_fetcher.py tab_generator.py tab_scraper.py chord_fetcher.py key_detector.py version.py
 copy "main.py" "%BUILD_DIR%\obf_backend\main.py"
 popd
 echo   Obfuscation selesai.
@@ -97,6 +105,27 @@ if %ERRORLEVEL% neq 0 (
 )
 popd
 echo   PyInstaller build selesai.
+echo.
+
+:: Step 4.5: Package portable ZIP (folder onedir = distribusi portable)
+echo [Step 4.5] Membuat paket portable (ZIP)...
+if not exist "%OUTPUT_DIR%\JagatAudio\JagatAudio.exe" (
+    echo ERROR: JagatAudio.exe tidak ditemukan di output PyInstaller.
+    pause
+    exit /b 1
+)
+if not exist "%PORTABLE_OUTPUT%" mkdir "%PORTABLE_OUTPUT%"
+set PORTABLE_ZIP=%PORTABLE_OUTPUT%\JagatAudio_Portable_v%APP_VERSION%.zip
+if exist "%PORTABLE_ZIP%" del /f /q "%PORTABLE_ZIP%"
+pushd "%OUTPUT_DIR%"
+tar.exe -a -c -f "%PORTABLE_ZIP%" JagatAudio
+if %ERRORLEVEL% neq 0 (
+    echo   WARNING: Gagal membuat ZIP portable.
+    echo   Folder portable tetap tersedia di: %OUTPUT_DIR%\JagatAudio\
+) else (
+    echo   Portable ZIP: %PORTABLE_ZIP%
+)
+popd
 echo.
 
 :: Step 5: Check if Inno Setup is available
@@ -152,9 +181,12 @@ echo   Build Selesai!
 echo ============================================
 echo.
 echo Output:
-echo   PyInstaller: %OUTPUT_DIR%\JagatAudio\
+echo   Portable folder: %OUTPUT_DIR%\JagatAudio\
+if exist "%PORTABLE_ZIP%" (
+    echo   Portable ZIP:    %PORTABLE_ZIP%
+)
 if exist "%INSTALLER_OUTPUT%\*.exe" (
-    echo   Installer:   %INSTALLER_OUTPUT%\
+    echo   Installer:       %INSTALLER_OUTPUT%\
 )
 echo.
 echo Catatan:

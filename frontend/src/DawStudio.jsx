@@ -6,10 +6,11 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as Tone from 'tone';
 import DawAudioEngine, { TRACK_COLORS, audioBufferToWav } from './DawAudioEngine';
 import {
   Play, Pause, Square, Circle,
-  Plus, Trash2, X, Volume2,
+  Plus, Trash2, X, Volume2, Speaker,
   Sliders, Download, Upload, FolderOpen, Save,
   Music, Repeat, ChevronUp, ChevronDown,
   Scissors, MousePointer2, Eraser, ZoomIn, ZoomOut,
@@ -21,15 +22,14 @@ import {
 import { generateDrumLoop, DRUM_PRESETS } from './DrumGenerator';
 import { generateBassLoop } from './BassGenerator';
 import { TRACK_MIXING_PRESETS, MASTERING_PRESETS } from './mixingPresets';
-import * as Tone from 'tone';
 import './daw.css';
 
 // ─── Constants ───────────────────────────────────────────────────
 
 const RULER_HEIGHT      = 32;
-const DEFAULT_TRACK_H   = 148;
-const MIN_TRACK_H       = 130;
-const MAX_TRACK_H       = 240;
+const DEFAULT_TRACK_H   = 178;
+const MIN_TRACK_H       = 150;
+const MAX_TRACK_H       = 300;
 const MIN_ZOOM          = 1;    // px per second
 const MAX_ZOOM          = 400;
 const DEFAULT_ZOOM      = 20;
@@ -95,6 +95,19 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+function formatInputDeviceLabel(device) {
+  const label = device.label || `Input ${String(device.deviceId || '').slice(0, 6)}…`;
+  if (/communications/i.test(label)) return `${label}  — hindari (VoIP)`;
+  return label;
+}
+
+function isCommunicationsInput(deviceOrLabel) {
+  const label = typeof deviceOrLabel === 'string'
+    ? deviceOrLabel
+    : (deviceOrLabel?.label || '');
+  return /communications/i.test(label);
+}
+
 function createDefaultTrack(index) {
   return {
     id: uid('track'),
@@ -105,7 +118,7 @@ function createDefaultTrack(index) {
     mute: false,
     solo: false,
     armed: false,
-    monitor: true,
+    monitor: false,
     inputId: 'default',
     regions: [],
     effects: {
@@ -115,6 +128,7 @@ function createDefaultTrack(index) {
       guitar:     { enabled: false, mode: 'clean', drive: 0.5 },
       eq:         { low: 0, mid: 0, high: 0 },
       compressor: { enabled: false, threshold: -20, ratio: 4, attack: 0.005, release: 0.2 },
+      pitchShift: { enabled: false, pitch: 0, wet: 1, windowSize: 0.08 },
       chorus:     { enabled: false, wet: 0.35, depth: 0.6, rate: 1.5 },
       reverb:     { enabled: false, wet: 0.25, decay: 1.8 },
       delay:      { enabled: false, wet: 0.2, feedback: 0.3 },
@@ -122,7 +136,7 @@ function createDefaultTrack(index) {
   };
 }
 
-function createRegion(audioId, startTime, duration, name, offset = 0) {
+function createRegion(audioId, startTime, duration, name, offset = 0, extra = {}) {
   return {
     id: uid('region'),
     audioId,
@@ -131,8 +145,8 @@ function createRegion(audioId, startTime, duration, name, offset = 0) {
     duration,
     offset,
     gain: 0,
-    fadeIn: 0,
-    fadeOut: 0,
+    fadeIn: extra.fadeIn ?? 0,
+    fadeOut: extra.fadeOut ?? 0,
   };
 }
 
@@ -229,7 +243,7 @@ function RotaryKnob({ value, min, max, step = 0.01, onChange, onChangeEnd, label
 
 // ─── Component ───────────────────────────────────────────────────
 
-function DawStudio({ token, apiBase = '', onClose }) {
+function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale, suggestedKeyLabel }) {
   // ============ STATE ============
 
   // Project
@@ -272,6 +286,8 @@ function DawStudio({ token, apiBase = '', onClose }) {
 
   // Inputs
   const [audioInputDevices, setAudioInputDevices] = useState([]);
+  const [audioOutputDevices, setAudioOutputDevices] = useState([]);
+  const [outputDeviceId, setOutputDeviceId] = useState('default');
   const [inputMeterLevels, setInputMeterLevels] = useState({});
   const [inputPermissionError, setInputPermissionError] = useState(null);
 
@@ -291,7 +307,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
   const [contextMenu, setContextMenu]   = useState(null);
   const [trackContextMenu, setTrackContextMenu] = useState(null);
   const [pendingDropFiles, setPendingDropFiles] = useState(null); // { files: File[], time: number }
-  const [headersWidth, setHeadersWidth] = useState(250);
+  const [headersWidth, setHeadersWidth] = useState(280);
 
   // Full Mastering Suite State
   const [masterSuite, setMasterSuite] = useState({
@@ -328,6 +344,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
   const [bassScale, setBassScale] = useState('minor');
   const [bassPattern, setBassPattern] = useState('offbeat');
   const [isGeneratingBass, setIsGeneratingBass] = useState(false);
+  const [stemSuggestedKey, setStemSuggestedKey] = useState(null);
 
   // Refs
   const engineRef        = useRef(null);
@@ -342,6 +359,9 @@ function DawStudio({ token, apiBase = '', onClose }) {
   tracksRef.current      = tracks;
   const cursorRef        = useRef(cursorPos);
   cursorRef.current      = cursorPos;
+  const isRecordingRef   = useRef(isRecording);
+  isRecordingRef.current = isRecording;
+  const recordStartRef   = useRef(0);
 
   // ============ TOAST ============
 
@@ -357,8 +377,8 @@ function DawStudio({ token, apiBase = '', onClose }) {
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
         const devices = await navigator.mediaDevices.enumerateDevices();
-        const inputs = devices.filter(d => d.kind === 'audioinput');
-        setAudioInputDevices(inputs);
+        setAudioInputDevices(devices.filter(d => d.kind === 'audioinput'));
+        setAudioOutputDevices(devices.filter(d => d.kind === 'audiooutput' && d.deviceId));
         setInputPermissionError(null);
       } catch (err) {
         console.error('Failed to enumerate devices or get permission:', err);
@@ -407,6 +427,43 @@ function DawStudio({ token, apiBase = '', onClose }) {
   useEffect(() => { engineRef.current?.setMasterLimiter(limiterOn); }, [limiterOn]);
   useEffect(() => { engineRef.current?.setMasterSuite(masterSuite); }, [masterSuite]);
   useEffect(() => { engineRef.current?.setMetronomeEnabled(metronomeOn, bpm); }, [metronomeOn, bpm]);
+
+  useEffect(() => {
+    const applyKey = (key, scale, label) => {
+      if (!key) return;
+      setBassKey(key);
+      if (scale) setBassScale(scale);
+      setStemSuggestedKey({ key, scale: scale || 'minor', label: label || `${key} ${scale === 'major' ? 'Mayor' : 'Minor'}` });
+    };
+
+    if (suggestedKey) {
+      applyKey(suggestedKey, suggestedScale, suggestedKeyLabel);
+      return;
+    }
+    if (!token) return undefined;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/projects`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const withKey = (data.projects || []).find((p) => p.musical_key?.key);
+        if (!cancelled && withKey?.musical_key?.key) {
+          applyKey(
+            withKey.musical_key.key,
+            withKey.musical_key.scale,
+            withKey.musical_key.label
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [suggestedKey, suggestedScale, suggestedKeyLabel, token, apiBase]);
 
   // ============ UNDO / REDO ============
 
@@ -512,7 +569,9 @@ function DawStudio({ token, apiBase = '', onClose }) {
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const devices = await navigator.mediaDevices.enumerateDevices();
       const inputs = devices.filter(d => d.kind === 'audioinput');
+      const outputs = devices.filter(d => d.kind === 'audiooutput' && d.deviceId);
       setAudioInputDevices(inputs);
+      setAudioOutputDevices(outputs);
       setInputPermissionError(null);
       showToast(inputs.length ? `${inputs.length} input soundcard terdeteksi` : 'Tidak ada input audio', 'info');
     } catch (err) {
@@ -539,13 +598,13 @@ function DawStudio({ token, apiBase = '', onClose }) {
       await engine.init();
       if (!engine.trackNodes.has(trackId)) engine.createTrackNode(trackId);
       await engine.startInputMonitor(trackId, track.inputId || 'default');
-      engine.setInputMonitorAudible(trackId, track.monitor !== false);
+      engine.setInputMonitorAudible(trackId, false);
       engine.setTrackVolume(trackId, track.volume);
       engine.setTrackPan(trackId, track.pan);
       engine.setTrackEffects(trackId, track.effects);
-      updateTrack(trackId, { armed: true, monitor: track.monitor !== false });
+      updateTrack(trackId, { armed: true, monitor: false });
       showToast(
-        'Track armed ✓ Mainkan alat musik. Monitor (🎧) untuk mendengar, lalu tekan Record.',
+        'Track armed ✓ Dengar gitar dari headphone GP-200. Monitor DAW (🎧) biarkan OFF supaya tidak echo.',
         'success'
       );
     } catch (err) {
@@ -571,6 +630,21 @@ function DawStudio({ token, apiBase = '', onClose }) {
     }
   }, [updateTrack, showToast]);
 
+  const setDawOutputDevice = useCallback(async (deviceId) => {
+    setOutputDeviceId(deviceId);
+    const engine = engineRef.current;
+    if (!engine) return;
+    try {
+      await engine.init();
+      await engine.setOutputDevice(deviceId);
+      const label = audioOutputDevices.find(d => d.deviceId === deviceId)?.label || 'Default';
+      showToast(`Output iringan: ${label}`, 'info');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal ganti output speaker', 'error');
+    }
+  }, [audioOutputDevices, showToast]);
+
   const toggleTrackMonitor = useCallback((trackId) => {
     const track = tracksRef.current.find(t => t.id === trackId);
     if (!track) return;
@@ -578,8 +652,8 @@ function DawStudio({ token, apiBase = '', onClose }) {
     updateTrack(trackId, { monitor: next });
     engineRef.current?.setInputMonitorAudible(trackId, next);
     showToast(next
-      ? 'Monitor ON — alat musik terdengar di speaker/headphone'
-      : 'Monitor OFF — tetap bisa rekam (hindari feedback mic)',
+      ? 'Monitor DAW ON — bisa echo jika GP-200 juga bunyi. Matikan headphone Valeton atau speaker PC.'
+      : 'Monitor DAW OFF — dengar suara murni gitar + efek dari GP-200',
     'info');
   }, [updateTrack, showToast]);
 
@@ -676,6 +750,9 @@ function DawStudio({ token, apiBase = '', onClose }) {
   const handleRecord = useCallback(async () => {
     const engine = engineRef.current;
     if (!engine) return;
+    try {
+      await Tone.start();
+    } catch (_) { /* ignore */ }
     await engine.init();
     // Ensure track nodes exist
     const currentTracks = tracksRef.current;
@@ -704,31 +781,67 @@ function DawStudio({ token, apiBase = '', onClose }) {
         return;
       }
       const recStart = cursorRef.current;
+      recordStartRef.current = recStart;
       const armedIds = armedTracks.map(t => t.id);
-      engine.onRecordingDone = async (trackId, blob) => {
+      engine.onRecordingDone = async (trackId, audioBuffer) => {
         try {
-          const file = new File([blob], `Recording_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
-          await importAudioFiles([file], trackId, recStart);
-          showToast('Overdub masuk ke track!', 'success');
-        } catch (e) { console.error(e); }
+          if (!audioBuffer) {
+            showToast('Rekaman kosong. Arm (●), pilih Line Valeton (bukan Communications), lalu petik gitar.', 'error');
+            return;
+          }
+          const ch = audioBuffer.getChannelData(0);
+          let peak = 0;
+          for (let i = 0; i < ch.length; i += 16) peak = Math.max(peak, Math.abs(ch[i]));
+          const result = await engine.importAudioBuffer(audioBuffer, `Recording ${new Date().toLocaleTimeString()}`);
+          setAudioLib(prev => ({
+            ...prev,
+            [result.audioId]: { name: result.name, duration: result.duration, peaks: result.peaks },
+          }));
+          const region = createRegion(result.audioId, recStart, result.duration, result.name, 0, {
+            fadeIn: 0.015,
+            fadeOut: 0.03,
+          });
+          setTracks(prev => {
+            const t = prev.map(track => track.id === trackId
+              ? { ...track, regions: [...(track.regions || []), region] }
+              : track);
+            pushUndo(t);
+            return t;
+          });
+          if (peak < 0.004) {
+            showToast('Gelombang hampir datar. Pilih input Line Valeton GP-200 (bukan Communications) dan pastikan track di-Arm.', 'error');
+          } else {
+            showToast('Rekaman masuk ke track!', 'success');
+          }
+        } catch (e) {
+          console.error(e);
+          showToast('Gagal memuat hasil rekaman', 'error');
+        }
       };
 
       const armedTracksData = armedTracks.map(t => ({ trackId: t.id, inputId: t.inputId }));
       try {
-        await engine.startRecording(armedTracksData);
-        // Play semua track SEBAGAI IRINGAN, kecuali track yang sedang di-record
+        await engine.prepareRecording(armedTracksData);
+        // Play iringan dulu, baru capture — supaya gitar sejajar ketukan musik
         engine.play(recStart, currentTracks, {
           loopEnabled, loopStart, loopEnd, bpm,
           skipTrackIds: armedIds,
         });
+        engine.beginCapture();
         setIsRecording(true);
         setIsPlaying(true);
         const names = armedTracks.map(t => t.name).join(', ');
-        showToast(`REC: ${names} — track lain diputar sebagai iringan`, 'success');
+        showToast(`REC ${names}: iringan tetap di GP-200. Track rekam hanya gitar, bukan musik track lain.`, 'success');
       } catch (err) {
         console.error(err);
         engine.stopRecording();
-        showToast('Gagal mulai rekam. Cek soundcard & Arm track lagi.', 'error');
+        engine.stop();
+        setIsRecording(false);
+        setIsPlaying(false);
+        showToast(
+          `Gagal mulai rekam: ${err?.message || 'Cek soundcard, pilih Line Valeton, lalu Arm track lagi.'}`,
+          'error'
+        );
       }
     }
   }, [isRecording, loopEnabled, loopStart, loopEnd, bpm, importAudioFiles, showToast]);
@@ -1336,6 +1449,68 @@ function DawStudio({ token, apiBase = '', onClose }) {
       }
     }
 
+    // ── Live recording waveform ──
+    if (isRecordingRef.current) {
+      const recStart = recordStartRef.current || 0;
+      const recDur = Math.max(0.04, cursorRef.current - recStart);
+      const engine = engineRef.current;
+      for (let ti = 0; ti < currentTracks.length; ti++) {
+        const track = currentTracks[ti];
+        if (!track.armed) continue;
+        const trackY = RULER_HEIGHT + ti * trackHeight - scrollY;
+        if (trackY + trackHeight < RULER_HEIGHT || trackY > h) continue;
+        const rx = recStart * zoom - scrollX;
+        const rw = Math.max(2, recDur * zoom);
+        const ry = trackY + 2;
+        const rh = trackHeight - 4;
+        ctx.save();
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') ctx.roundRect(rx, ry, rw, rh, 4);
+        else ctx.rect(rx, ry, rw, rh);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(255, 51, 102, 0.18)';
+        ctx.fillRect(rx, ry, rw, rh);
+        const livePeaks = engine?.getLiveRecordPeaks?.(track.id) || [];
+        if (livePeaks.length > 0) {
+          const comp = engine?.getRecordCompensationSec?.() || 0;
+          const peakShift = recDur > 0.001 ? (comp / recDur) * livePeaks.length : 0;
+          const centerY = ry + rh / 2;
+          const amp = (rh / 2) * 0.85;
+          ctx.fillStyle = 'rgba(255, 80, 120, 0.85)';
+          ctx.beginPath();
+          const drawW = Math.min(Math.ceil(rw), Math.ceil(w - rx + 2));
+          for (let i = 0; i < drawW; i++) {
+            const pi = Math.min(
+              livePeaks.length - 1,
+              Math.max(0, Math.floor((i / Math.max(1, rw)) * livePeaks.length + peakShift))
+            );
+            const p = livePeaks[pi];
+            const py = centerY - (p?.max ?? 0) * amp;
+            if (i === 0) ctx.moveTo(rx + i, py);
+            else ctx.lineTo(rx + i, py);
+          }
+          for (let i = drawW - 1; i >= 0; i--) {
+            const pi = Math.min(
+              livePeaks.length - 1,
+              Math.max(0, Math.floor((i / Math.max(1, rw)) * livePeaks.length + peakShift))
+            );
+            const p = livePeaks[pi];
+            const py = centerY - (p?.min ?? 0) * amp;
+            ctx.lineTo(rx + i, py);
+          }
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = '600 10px Inter, system-ui, sans-serif';
+        ctx.fillText('REC', rx + 6, ry + 14);
+        ctx.restore();
+        ctx.strokeStyle = 'rgba(255, 51, 102, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(rx, ry, rw, rh);
+      }
+    }
+
     // ── Playhead ──
     const phx = Math.round(cursorRef.current * zoom - scrollX) + 0.5;
     if (phx >= 0 && phx <= w) {
@@ -1927,7 +2102,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
               />
             </label>
             {onClose && (
-              <button className="daw-home-btn secondary" onClick={onClose}>
+              <button className="daw-home-btn back" onClick={onClose}>
                 ← Kembali ke Menu
               </button>
             )}
@@ -2039,6 +2214,34 @@ function DawStudio({ token, apiBase = '', onClose }) {
 
         <div className="daw-transport-position">
           {formatTime(cursorPos)}
+        </div>
+
+        <div className="daw-transport-output" title="Iringan boleh ke GP-200, seperti Studio One. Rekaman hanya mengambil input gitar.">
+          <Speaker size={13} />
+          <select
+            value={outputDeviceId}
+            disabled={isRecording}
+            onChange={e => setDawOutputDevice(e.target.value)}
+          >
+            <option value="default">Output Default (hindari)</option>
+            {audioOutputDevices
+              .slice()
+              .sort((a, b) => {
+                const rank = (d) => {
+                  const l = (d.label || '').toLowerCase();
+                  if (/communications/.test(l)) return 80;
+                  if (/valeton|gp.?200/.test(l)) return 70;
+                  if (/realtek|speaker|headphone/.test(l)) return 0;
+                  return 20;
+                };
+                return rank(a) - rank(b);
+              })
+              .map(d => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {/communications/i.test(d.label || '') ? `${d.label} — hindari` : d.label}
+                </option>
+              ))}
+          </select>
         </div>
 
         <div className="daw-transport-spacer" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
@@ -2199,28 +2402,29 @@ function DawStudio({ token, apiBase = '', onClose }) {
                   onChange={e => updateTrack(track.id, { name: e.target.value })}
                   spellCheck={false}
                 />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginRight: 2 }}>
+                <div className="daw-track-header-top-actions">
                   <button
-                    className="daw-track-ctrl-btn"
+                    className="daw-track-mini-action-btn"
                     onClick={() => moveTrack(track.id, 'up')}
-                    title="Pindah ke atas"
-                    style={{ width: 22, height: 16, fontSize: '0.6rem', padding: 0 }}
-                  >▲</button>
+                    title="Pindah track ke atas"
+                  >
+                    <ChevronUp size={13} />
+                  </button>
                   <button
-                    className="daw-track-ctrl-btn"
+                    className="daw-track-mini-action-btn"
                     onClick={() => moveTrack(track.id, 'down')}
-                    title="Pindah ke bawah"
-                    style={{ width: 22, height: 16, fontSize: '0.6rem', padding: 0 }}
-                  >▼</button>
+                    title="Pindah track ke bawah"
+                  >
+                    <ChevronDown size={13} />
+                  </button>
+                  <button
+                    className="daw-track-mini-action-btn delete-btn"
+                    onClick={() => removeTrack(track.id)}
+                    title="Hapus track"
+                  >
+                    <X size={13} />
+                  </button>
                 </div>
-                <button
-                  className="daw-track-ctrl-btn"
-                  onClick={() => removeTrack(track.id)}
-                  title="Hapus track"
-                  style={{ color: 'var(--daw-text-dim)', width: 28, height: 26 }}
-                >
-                  <X size={14} />
-                </button>
               </div>
               <div className="daw-track-header-controls">
                 <button
@@ -2242,7 +2446,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
                   className={`daw-track-ctrl-btn ${track.armed && track.monitor !== false ? 'monitor-active' : ''}`}
                   onClick={() => toggleTrackMonitor(track.id)}
                   disabled={!track.armed}
-                  title={track.monitor !== false ? 'Monitor ON (dengar input)' : 'Monitor OFF'}
+                  title={track.monitor !== false ? 'Monitor DAW ON (bisa echo)' : 'Monitor DAW OFF — dengar dari GP-200'}
                 >
                   <Headphones size={14} />
                 </button>
@@ -2289,9 +2493,22 @@ function DawStudio({ token, apiBase = '', onClose }) {
                   title="Pilih input soundcard / interface untuk alat musik atau mic"
                 >
                   <option value="default">Input Default (System)</option>
-                  {audioInputDevices.map(d => (
+                  {audioInputDevices
+                    .slice()
+                    .sort((a, b) => {
+                      const rank = (d) => {
+                        const l = (d.label || '').toLowerCase();
+                        if (/communications/.test(l)) return 80;
+                        if (/valeton|gp.?200/.test(l) && /line/.test(l)) return 0;
+                        if (/valeton|gp.?200/.test(l)) return 1;
+                        if (/line/.test(l)) return 5;
+                        return 20;
+                      };
+                      return rank(a) - rank(b);
+                    })
+                    .map(d => (
                     <option key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Input ${d.deviceId.slice(0, 6)}…`}
+                      {formatInputDeviceLabel(d)}
                     </option>
                   ))}
                 </select>
@@ -2305,13 +2522,32 @@ function DawStudio({ token, apiBase = '', onClose }) {
                 </button>
               </div>
               {track.armed && (
-                <div className="daw-track-input-meter" title="Level input live">
-                  <div
-                    className="daw-track-input-meter-fill"
-                    style={{
-                      width: `${Math.max(0, Math.min(100, ((inputMeterLevels[track.id] ?? -100) + 60) / 60 * 100))}%`,
-                    }}
-                  />
+                <>
+                  <div className="daw-track-input-meter" title="Level input live — harus bergerak saat gitar dipetik">
+                    <div
+                      className="daw-track-input-meter-fill"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, ((inputMeterLevels[track.id] ?? -100) + 60) / 60 * 100))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className={`daw-track-input-status ${(inputMeterLevels[track.id] ?? -100) > -42 ? 'ok' : 'wait'}`}>
+                    {(inputMeterLevels[track.id] ?? -100) > -42
+                      ? 'Gitar terhubung ✓ — meter bergerak'
+                      : 'Petik gitar… jika diam, pilih Line Valeton (bukan Communications)'}
+                  </div>
+                </>
+              )}
+              {!track.armed && (
+                <div className="daw-track-input-status wait">
+                  Klik ● Arm, petik gitar, lalu Record. Biarkan 🎧 OFF agar tidak echo.
+                </div>
+              )}
+              {isCommunicationsInput(
+                audioInputDevices.find(d => d.deviceId === track.inputId)?.label || ''
+              ) && (
+                <div className="daw-track-input-status warn">
+                  Jangan pakai “Communications”. Pilih Line / Valeton GP-200 biasa.
                 </div>
               )}
               {inputPermissionError && track === tracks[0] && (
@@ -2411,6 +2647,7 @@ function DawStudio({ token, apiBase = '', onClose }) {
                 fx.saturation?.enabled,
                 fx.guitar?.enabled,
                 fx.compressor?.enabled,
+                fx.pitchShift?.enabled,
                 fx.chorus?.enabled,
                 fx.delay?.enabled,
                 fx.reverb?.enabled,
@@ -2693,6 +2930,12 @@ function DawStudio({ token, apiBase = '', onClose }) {
                 onClick={() => setActiveFxTab('space')}
               >
                 🌌 Space & Width
+              </button>
+              <button
+                className={`daw-fx-tab-btn ${activeFxTab === 'pitch' ? 'active' : ''}`}
+                onClick={() => setActiveFxTab('pitch')}
+              >
+                🎵 Pitch & Tune
               </button>
             </div>
 
@@ -3035,6 +3278,123 @@ function DawStudio({ token, apiBase = '', onClose }) {
                         onChange={e => setFx('reverb', { decay: Number(e.target.value) })}
                       />
                       <span className="daw-fx-value">{(fx.reverb?.decay ?? 1.8).toFixed(1)}s</span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* TAB 5: PITCH SHIFT / TRANSPOSE */}
+              {activeFxTab === 'pitch' && (
+                <>
+                  <div className="daw-fx-section">
+                    <div className="daw-fx-section-header">
+                      <div className="daw-fx-section-title-wrap">
+                        <Music size={14} style={{ color: '#ff6b6b' }} />
+                        <span className="daw-fx-section-title">Pitch Shifter / Transpose (Capo Digital)</span>
+                      </div>
+                      <div className={`daw-fx-toggle ${fx.pitchShift?.enabled ? 'on' : ''}`} onClick={() => setFx('pitchShift', { enabled: !fx.pitchShift?.enabled })} />
+                    </div>
+
+                    {/* Pitch Display */}
+                    <div style={{ textAlign: 'center', padding: '10px 0 6px', background: 'rgba(0, 0, 0, 0.25)', borderRadius: 8, margin: '6px 0 10px', border: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                      <div style={{ fontSize: 28, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: (fx.pitchShift?.pitch ?? 0) > 0 ? '#06d6a0' : (fx.pitchShift?.pitch ?? 0) < 0 ? '#ff6b6b' : '#94a3b8' }}>
+                        {(fx.pitchShift?.pitch ?? 0) > 0 ? '+' : ''}{fx.pitchShift?.pitch ?? 0} <span style={{ fontSize: 16, fontWeight: 600 }}>semitone</span>
+                      </div>
+                      <div style={{ marginTop: 2, fontSize: 13, fontWeight: 600, color: (fx.pitchShift?.pitch ?? 0) !== 0 ? '#cbd5e1' : '#64748b' }}>
+                        {(() => {
+                          const p = fx.pitchShift?.pitch ?? 0;
+                          const names = ['Unison (Nada Sama)', '♭2 (Naik/Turun ½ Nada)', '2 (1 Nada Penuh)', '♭3 (1½ Nada)', '3 (2 Nada)', '4 (2½ Nada)', 'Tritone (3 Nada)', '5 (3½ Nada)', '♭6 (4 Nada)', '6 (4½ Nada)', '♭7 (5 Nada)', '7 (5½ Nada)', '1 Oktaf Penuh'];
+                          const abs = Math.abs(p);
+                          const name = names[abs] || `${abs} semitone`;
+                          if (p === 0) return '— Nada Asli (Original Pitch)';
+                          return p > 0 ? `▲ Naik ${name}` : `▼ Turun ${name}`;
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Pitch Slider */}
+                    <div className="daw-fx-row">
+                      <label>Pitch (Semitone)</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={-12}
+                        max={12}
+                        step={1}
+                        value={fx.pitchShift?.pitch ?? 0}
+                        onChange={e => setFx('pitchShift', { pitch: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value" style={{ fontSize: '0.88rem' }}>{(fx.pitchShift?.pitch ?? 0) > 0 ? '+' : ''}{fx.pitchShift?.pitch ?? 0} st</span>
+                    </div>
+
+                    {/* Wet/Mix Slider */}
+                    <div className="daw-fx-row">
+                      <label>Wet / Mix</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={fx.pitchShift?.wet ?? 1}
+                        onChange={e => setFx('pitchShift', { wet: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value" style={{ fontSize: '0.88rem' }}>{Math.round((fx.pitchShift?.wet ?? 1) * 100)}%</span>
+                    </div>
+
+                    {/* Window Size (Quality) Slider */}
+                    <div className="daw-fx-row">
+                      <label>Kualitas (Window)</label>
+                      <input
+                        type="range"
+                        className="daw-fx-slider"
+                        min={0.03}
+                        max={0.15}
+                        step={0.005}
+                        value={fx.pitchShift?.windowSize ?? 0.08}
+                        onChange={e => setFx('pitchShift', { windowSize: Number(e.target.value) })}
+                      />
+                      <span className="daw-fx-value" style={{ fontSize: '0.88rem' }}>{((fx.pitchShift?.windowSize ?? 0.08) * 1000).toFixed(0)} ms</span>
+                    </div>
+
+                    {/* Quick Transpose Buttons */}
+                    <div style={{ marginTop: 12 }}>
+                      <label style={{ fontSize: 12, fontWeight: 700, color: '#ffd166', marginBottom: 6, display: 'block' }}>⚡ Transpose Cepat:</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }}>
+                        {[
+                          { label: '-5 (Turun 4)', val: -5 },
+                          { label: '-3 (Turun ♭3)', val: -3 },
+                          { label: '-2 (Turun 1)', val: -2 },
+                          { label: '-1 (Turun ½)', val: -1 },
+                          { label: '0 (Original)', val: 0 },
+                          { label: '+1 (Naik ½)', val: 1 },
+                          { label: '+2 (Naik 1)', val: 2 },
+                          { label: '+3 (Naik ♭3)', val: 3 },
+                          { label: '+5 (Naik 4)', val: 5 },
+                          { label: '+7 (Naik 5)', val: 7 },
+                        ].map(b => (
+                          <button
+                            key={b.val}
+                            className="daw-fx-mini-btn"
+                            style={{
+                              background: (fx.pitchShift?.pitch ?? 0) === b.val ? 'rgba(131, 56, 236, 0.35)' : undefined,
+                              borderColor: (fx.pitchShift?.pitch ?? 0) === b.val ? '#8338ec' : undefined,
+                              color: (fx.pitchShift?.pitch ?? 0) === b.val ? '#ffffff' : undefined,
+                              fontWeight: (fx.pitchShift?.pitch ?? 0) === b.val ? 800 : 600,
+                              boxShadow: (fx.pitchShift?.pitch ?? 0) === b.val ? '0 0 10px rgba(131, 56, 236, 0.4)' : undefined,
+                            }}
+                            onClick={() => setFx('pitchShift', { enabled: true, pitch: b.val })}
+                          >
+                            {b.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Info Text */}
+                    <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(20, 30, 55, 0.8)', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: 8, fontSize: 12, color: '#94a3b8', lineHeight: 1.55 }}>
+                      💡 <strong style={{ color: '#38bdf8' }}>Tip:</strong> Mainkan gitar di posisi chord yang sama — output suara akan otomatis berubah sesuai nada yang diatur (Capo Digital).
+                      <br/><strong>Wet 100%</strong> = full transpose. Kurangi Wet jika ingin efek harmonisasi (campuran nada asli + shifted).
                     </div>
                   </div>
                 </>
@@ -3561,6 +3921,9 @@ function DawStudio({ token, apiBase = '', onClose }) {
             
             <p style={{ fontSize: '0.8rem', color: 'var(--daw-text-dim)', marginBottom: 0, marginTop: 12, lineHeight: 1.5 }}>
               Bass akan dirender dalam {drumBars} Bars mengikuti tempo <strong>{bpm} BPM</strong>.
+              {stemSuggestedKey?.key && (
+                <> Nada dasar terisi dari Stem Separator: <strong>{stemSuggestedKey.label || `${stemSuggestedKey.key} ${stemSuggestedKey.scale === 'major' ? 'Mayor' : 'Minor'}`}</strong>.</>
+              )}
             </p>
 
             <div className="daw-modal-actions">

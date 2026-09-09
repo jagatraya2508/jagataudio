@@ -150,6 +150,20 @@ body:has(.daw-studio) .background-glow {
   border-color: var(--daw-border-bright);
 }
 
+.daw-home-btn.back {
+  background: #f97316;
+  color: #fff;
+  border: 1px solid #fb923c;
+  box-shadow: 0 4px 16px rgba(249, 115, 22, 0.35);
+}
+
+.daw-home-btn.back:hover {
+  background: #ea580c;
+  border-color: #fdba74;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 22px rgba(249, 115, 22, 0.5);
+}
+
 .daw-home-projects {
   width: 100%;
   max-width: 700px;
@@ -350,6 +364,33 @@ body:has(.daw-studio) .background-glow {
   letter-spacing: 0.05em;
 }
 
+.daw-transport-output {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--daw-text-dim);
+  min-width: 0;
+}
+
+.daw-transport-output select {
+  max-width: 180px;
+  font-size: 0.72rem;
+  background: #1a1a24;
+  color: #c4c4d4;
+  border: 1px solid #2d2d3d;
+  border-radius: 4px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.daw-transport-output select:focus {
+  border-color: var(--daw-accent);
+}
+
+.daw-transport-output select:disabled {
+  opacity: 0.55;
+}
+
 .daw-transport-spacer {
   flex: 1;
 }
@@ -544,12 +585,13 @@ body:has(.daw-studio) .background-glow {
 .daw-track-header {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  padding: 8px 12px;
+  justify-content: flex-start;
+  padding: 10px 12px 8px 14px;
   border-bottom: 1px solid var(--daw-border-bright);
-  gap: 6px;
+  gap: 7px;
   position: relative;
   transition: background 0.1s;
+  box-sizing: border-box;
 }
 
 .daw-track-header::before {
@@ -571,16 +613,17 @@ body:has(.daw-studio) .background-glow {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
 }
 
 .daw-track-name {
   flex: 1;
-  font-size: 0.92rem;
-  font-weight: 650;
+  font-size: 0.94rem;
+  font-weight: 700;
   color: var(--daw-text);
   background: transparent;
   border: none;
-  padding: 3px 5px;
+  padding: 2px 5px;
   border-radius: 4px;
   min-width: 0;
   cursor: text;
@@ -591,6 +634,40 @@ body:has(.daw-studio) .background-glow {
   background: var(--daw-surface-2);
 }
 
+.daw-track-header-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.daw-track-mini-action-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--daw-text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.daw-track-mini-action-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--daw-text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.daw-track-mini-action-btn.delete-btn:hover {
+  background: rgba(255, 71, 126, 0.25);
+  color: #ff477e;
+  border-color: #ff477e;
+}
+
 .daw-track-header-controls {
   display: flex;
   align-items: center;
@@ -598,7 +675,7 @@ body:has(.daw-studio) .background-glow {
 }
 
 .daw-track-ctrl-btn {
-  width: 30px;
+  width: 32px;
   height: 26px;
   border: 1px solid var(--daw-border);
   border-radius: 4px;
@@ -652,19 +729,19 @@ body:has(.daw-studio) .background-glow {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin-top: 2px;
-  padding: 0 2px;
+  margin-top: 1px;
+  padding: 0 1px;
 }
 
 .daw-track-input-select {
   flex: 1;
   min-width: 0;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   background: #1a1a24;
   color: #c4c4d4;
   border: 1px solid #2d2d3d;
   border-radius: 4px;
-  padding: 4px 6px;
+  padding: 5px 8px;
   outline: none;
 }
 
@@ -704,6 +781,24 @@ body:has(.daw-studio) .background-glow {
   background: linear-gradient(90deg, #06d6a0, #ffbe0b 70%, #ff006e);
   border-radius: 3px;
   transition: width 0.05s linear;
+}
+
+.daw-track-input-status {
+  margin: 3px 2px 0;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.daw-track-input-status.ok {
+  color: #06d6a0;
+}
+
+.daw-track-input-status.wait {
+  color: #94a3b8;
+}
+
+.daw-track-input-status.warn {
+  color: #ffbe0b;
 }
 
 .daw-track-input-hint {
@@ -1508,14 +1603,15 @@ body:has(.daw-studio) .background-glow {
 /* ─── Pro Track FX Panel ───────────────────────────────────────── */
 .daw-fx-panel {
   position: absolute;
-  bottom: 10px;
-  right: 12px;
-  width: 360px;
-  max-height: 490px;
+  bottom: 12px;
+  right: 14px;
+  width: 480px;
+  max-width: calc(100vw - 28px);
+  max-height: 640px;
   background: #14172b;
-  border: 1px solid rgba(131, 56, 236, 0.4);
-  border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8), 0 0 20px rgba(131, 56, 236, 0.2);
+  border: 1px solid rgba(131, 56, 236, 0.45);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85), 0 0 24px rgba(131, 56, 236, 0.25);
   z-index: 35;
   overflow: hidden;
   display: flex;
@@ -1532,7 +1628,7 @@ body:has(.daw-studio) .background-glow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: 12px 16px;
   background: linear-gradient(90deg, #1e223f 0%, #16182e 100%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -1540,18 +1636,18 @@ body:has(.daw-studio) .background-glow {
 .daw-fx-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .daw-fx-header-color {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  box-shadow: 0 0 6px currentColor;
+  box-shadow: 0 0 8px currentColor;
 }
 
 .daw-fx-header-title {
-  font-size: 0.78rem;
+  font-size: 0.9rem;
   font-weight: 800;
   color: #ffffff;
   letter-spacing: 0.04em;
@@ -1562,8 +1658,8 @@ body:has(.daw-studio) .background-glow {
   border: none;
   color: #94a3b8;
   cursor: pointer;
-  padding: 4px;
-  border-radius: 4px;
+  padding: 6px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1578,14 +1674,14 @@ body:has(.daw-studio) .background-glow {
 .daw-fx-preset-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
+  gap: 10px;
+  padding: 10px 16px;
   background: #0f1122;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .daw-fx-preset-label {
-  font-size: 0.65rem;
+  font-size: 0.76rem;
   font-weight: 700;
   color: #ffd166;
   white-space: nowrap;
@@ -1595,10 +1691,10 @@ body:has(.daw-studio) .background-glow {
   flex: 1;
   background: #1c203b;
   color: #f1f5f9;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
   outline: none;
   cursor: pointer;
 }
@@ -1611,20 +1707,24 @@ body:has(.daw-studio) .background-glow {
 
 .daw-fx-tab-btn {
   flex: 1;
-  padding: 8px 4px;
+  padding: 10px 6px;
   border: none;
   background: transparent;
   color: #94a3b8;
-  font-size: 0.64rem;
+  font-size: 0.74rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.15s;
   border-bottom: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .daw-fx-tab-btn:hover {
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .daw-fx-tab-btn.active {
@@ -1634,85 +1734,86 @@ body:has(.daw-studio) .background-glow {
 }
 
 .daw-fx-tab-body {
-  padding: 12px 14px;
+  padding: 14px 16px;
   overflow-y: auto;
-  max-height: 340px;
+  max-height: 460px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .daw-fx-section {
   background: #1a1e36;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  padding: 10px;
+  border-radius: 8px;
+  padding: 12px 14px;
 }
 
 .daw-fx-section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .daw-fx-section-title-wrap {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .daw-fx-section-title {
-  font-size: 0.72rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: #f1f5f9;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
 }
 
 .daw-fx-toggle {
   position: relative;
-  width: 32px;
-  height: 16px;
-  border-radius: 8px;
+  width: 38px;
+  height: 20px;
+  border-radius: 10px;
   background: #090a12;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
 .daw-fx-toggle.on {
   background: #8338ec;
   border-color: #a78bfa;
-  box-shadow: 0 0 8px rgba(131, 56, 236, 0.6);
+  box-shadow: 0 0 10px rgba(131, 56, 236, 0.7);
 }
 
 .daw-fx-toggle::after {
   content: '';
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: #ffffff;
-  top: 1px;
-  left: 1px;
+  top: 2px;
+  left: 2px;
   transition: transform 0.2s;
 }
 
 .daw-fx-toggle.on::after {
-  transform: translateX(16px);
+  transform: translateX(18px);
 }
 
 .daw-fx-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 10px;
+  margin-top: 8px;
 }
 
 .daw-fx-row label {
-  font-size: 0.68rem;
+  font-size: 0.78rem;
   color: #94a3b8;
-  min-width: 90px;
+  min-width: 110px;
   font-weight: 600;
 }
 
@@ -1721,51 +1822,51 @@ body:has(.daw-studio) .background-glow {
   background: #0d0f1c;
   color: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
-  padding: 3px 6px;
-  font-size: 0.68rem;
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
   outline: none;
 }
 
 .daw-fx-slider {
   flex: 1;
-  height: 4px;
+  height: 6px;
   -webkit-appearance: none;
   appearance: none;
   background: #080912;
-  border-radius: 2px;
+  border-radius: 3px;
   cursor: pointer;
 }
 
 .daw-fx-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: #8338ec;
-  border: 1px solid #ffffff;
+  border: 2px solid #ffffff;
   cursor: pointer;
-  box-shadow: 0 0 6px rgba(131, 56, 236, 0.8);
+  box-shadow: 0 0 8px rgba(131, 56, 236, 0.9);
 }
 
 .daw-fx-value {
-  font-size: 0.65rem;
+  font-size: 0.78rem;
   color: #38bdf8;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
-  min-width: 44px;
+  min-width: 52px;
   text-align: right;
 }
 
 .daw-fx-mini-btn {
   flex: 1;
-  padding: 3px 6px;
-  font-size: 0.6rem;
+  padding: 6px 8px;
+  font-size: 0.72rem;
   font-weight: 600;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.05);
   color: #cbd5e1;
-  border-radius: 3px;
+  border-radius: 5px;
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -1775,6 +1876,7 @@ body:has(.daw-studio) .background-glow {
   border-color: #8338ec;
   color: #ffffff;
 }
+
 
 /* ─── Master Bus Mastering Suite Modal ──────────────────────────── */
 .daw-master-modal {

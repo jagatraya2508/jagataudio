@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as Tone from 'tone';
-import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle, Layers, Shuffle, Repeat } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, Volume2, VolumeX, Music, Settings2, Guitar, Mic2, Drum, Sparkles, RefreshCw, Download, FileText, User, Lock, LogOut, Shield, Trash2, Pencil, Plus, X, Mail, MonitorPlay, Search, ChevronUp, ChevronDown, RotateCcw, Mic, KeyRound, Copy, CheckCircle, AlertTriangle, Clock, Sliders, FolderOpen, SkipBack, SkipForward, ListMusic, ArrowLeft, Scissors, Square, Circle, Layers, Shuffle, Repeat, Save } from 'lucide-react';
 import DawStudio from './DawStudio';
+import ChordSheet from './ChordSheet';
+import { listSavedPlaylistGroups, putPlaylistGroup, deletePlaylistGroup, ensureHandlePermission } from './mediaPlaylistStore';
 import './index.css';
 
 // Production (JagatAudio.exe): API & UI one origin → ikut port otomatis.
@@ -17,13 +19,81 @@ const EQ_BAND_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 const EQ_BAND_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
 const flatEqBands = () => EQ_BAND_FREQS.map(() => 0);
 
-/** Konfigurasi Granular Synthesis untuk pitch-shift & tempo-stretch halus tanpa pengulangan (stutter-free).
- *  Grain size 80ms dengan 40ms crossfade memastikan peregangan tempo dan pitch berjalan mulus. */
+/** Granular pitch-shift: larger grains when dropping key keep body; extra overlap reduces flutter. */
 const grainSizeForPitch = (semitones) => {
-  const abs = Math.abs(Number(semitones) || 0);
-  return Math.max(0.06, Math.min(0.12, 0.08 + abs * 0.003));
+  const n = Number(semitones) || 0;
+  const abs = Math.abs(n);
+  if (n < 0) return Math.min(0.16, 0.09 + abs * 0.005);
+  if (n > 0) return Math.min(0.13, 0.085 + abs * 0.0035);
+  return 0.08;
 };
 const GRAIN_OVERLAP = 0.04;
+const grainOverlapForPitch = (semitones) => {
+  const abs = Math.abs(Number(semitones) || 0);
+  return Math.min(0.085, GRAIN_OVERLAP + abs * 0.003);
+};
+
+const formantStrengthForStem = (stemId) => {
+  if (stemId === 'vocals') return 1;
+  if (stemId === 'bass') return 0.55;
+  if (stemId === 'drums') return 0.22;
+  return 0.42;
+};
+
+function createFormantCompensator() {
+  const hp = new Tone.Filter({ type: 'highpass', frequency: 20, Q: 0.7 });
+  const low = new Tone.Filter({ type: 'lowshelf', frequency: 240, gain: 0 });
+  const body = new Tone.Filter({ type: 'peaking', frequency: 700, Q: 0.75, gain: 0 });
+  const presence = new Tone.Filter({ type: 'peaking', frequency: 1800, Q: 0.85, gain: 0 });
+  const high = new Tone.Filter({ type: 'highshelf', frequency: 3400, gain: 0 });
+  hp.connect(low);
+  low.connect(body);
+  body.connect(presence);
+  presence.connect(high);
+  return { input: hp, output: high, hp, low, body, presence, high };
+}
+
+function setFormantCompensation(fx, semitones, strength = 1) {
+  if (!fx) return;
+  const n = Math.max(-12, Math.min(12, Number(semitones) || 0));
+  const a = Math.abs(n) * Math.max(0, Math.min(1.25, strength));
+  if (!n || a < 0.01) {
+    fx.hp.frequency.value = 20;
+    fx.low.gain.value = 0;
+    fx.body.gain.value = 0;
+    fx.presence.gain.value = 0;
+    fx.high.gain.value = 0;
+    return;
+  }
+  if (n > 0) {
+    fx.hp.frequency.value = 20;
+    fx.low.frequency.value = 220;
+    fx.low.gain.value = Math.min(10, a * 0.95);
+    fx.body.frequency.value = 650;
+    fx.body.gain.value = Math.min(6, a * 0.42);
+    fx.presence.frequency.value = 1600;
+    fx.presence.gain.value = Math.min(3, a * 0.12);
+    fx.high.frequency.value = 3200;
+    fx.high.gain.value = Math.max(-12, -a * 1.05);
+  } else {
+    fx.hp.frequency.value = Math.min(140, 28 + a * 7);
+    fx.low.frequency.value = 180;
+    fx.low.gain.value = Math.max(-12, -a * 1.05);
+    fx.body.frequency.value = 800;
+    fx.body.gain.value = Math.min(4, a * 0.2);
+    fx.presence.frequency.value = 2200;
+    fx.presence.gain.value = Math.min(8, a * 0.55);
+    fx.high.frequency.value = 4000;
+    fx.high.gain.value = Math.min(10, a * 0.9);
+  }
+}
+
+function disposeFormantCompensator(fx) {
+  if (!fx) return;
+  ['hp', 'low', 'body', 'presence', 'high'].forEach((key) => {
+    try { fx[key]?.dispose(); } catch { /* ignore */ }
+  });
+}
 
 const LRC_TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]/g;
 
@@ -202,6 +272,41 @@ function getActiveLyricIndex(lines, currentTime, offsetMs = 0, speedPct = 100) {
   return getLyricSyncState(lines, currentTime, offsetMs, speedPct).activeIndex;
 }
 
+function lyricsFromApiData(data) {
+  if (!data?.content) return null;
+  const parsed = data.format === 'lrc' ? parseLrc(data.content) : null;
+  if (parsed?.lines?.length) {
+    return {
+      type: 'lrc',
+      lines: parsed.lines,
+      offset: parsed.offset,
+      source: data.from_cache ? 'cache' : 'online',
+      raw: data.content,
+    };
+  }
+  return {
+    type: 'plain',
+    text: data.content,
+    source: data.from_cache ? 'cache' : 'online',
+    raw: data.content,
+  };
+}
+
+function chordsFromApiData(data) {
+  if (!data?.content) return null;
+  return {
+    content: data.content,
+    type: data.type || 'Chords',
+    source: data.source || '',
+    sourceName: data.source_name || '',
+    sourceUrl: data.source_url || '',
+    songName: data.song_name || '',
+    artistName: data.artist_name || '',
+    rating: data.rating,
+    fromCache: !!data.from_cache,
+  };
+}
+
 function parseTrackName(trackName) {
   const parts = trackName.trim().split(/\s+[-–—]\s+/);
   if (parts.length >= 2) {
@@ -377,6 +482,55 @@ function pitchDiffCents(micHz, refHz) {
   return cents;
 }
 
+const KEY_NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+function formatMusicalKey(key, scale) {
+  if (!key) return '';
+  const mode = scale === 'major' ? 'Mayor' : 'Minor';
+  return `${key} ${mode}`;
+}
+
+function shiftMusicalKey(key, semitones) {
+  const i = KEY_NOTE_NAMES.indexOf(key);
+  if (i < 0) return key;
+  const shift = Number(semitones) || 0;
+  return KEY_NOTE_NAMES[((i + shift) % 12 + 12) % 12];
+}
+
+/** Shortest transposition in -6..+6 so the song lands on toKey. */
+function semitoneOffsetToKey(fromKey, toKey) {
+  const from = KEY_NOTE_NAMES.indexOf(fromKey);
+  const to = KEY_NOTE_NAMES.indexOf(toKey);
+  if (from < 0 || to < 0) return 0;
+  let diff = ((to - from) % 12 + 12) % 12;
+  if (diff > 6) diff -= 12;
+  return diff;
+}
+
+function applyMusicalKeyFromMeta(info) {
+  if (info && info.key) return info;
+  return null;
+}
+
+const PLAYLIST_KEY_CACHE = 'jagataudio_playlist_keys';
+
+function readPlaylistKeyCache() {
+  try {
+    return JSON.parse(sessionStorage.getItem(PLAYLIST_KEY_CACHE) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function writePlaylistKeyCache(key, info) {
+  if (!key || !info?.key) return;
+  try {
+    const map = readPlaylistKeyCache();
+    map[key] = { key: info.key, scale: info.scale, label: info.label, assumed: !!info.assumed };
+    sessionStorage.setItem(PLAYLIST_KEY_CACHE, JSON.stringify(map));
+  } catch { /* ignore quota */ }
+}
+
 function parseNumericInput(raw, { min, max, allowInf = false, infValue = min } = {}) {
   const text = String(raw ?? '').trim().replace(/\s*(dB|LUFS)\s*$/i, '').replace(',', '.');
   if (!text) return null;
@@ -543,6 +697,8 @@ function App() {
   const [pans, setPans] = useState({});
   const [pitch, setPitch] = useState(0); // -12 to 12 semitones
   const [tempo, setTempo] = useState(1); // 0.5 to 2.0 playback rate
+  const [stemMusicalKey, setStemMusicalKey] = useState(null);
+  const [lastMusicalKey, setLastMusicalKey] = useState(null);
   const [stemCurrentTime, setStemCurrentTime] = useState(0);
   const [stemDuration, setStemDuration] = useState(0);
   const [stemTrackName, setStemTrackName] = useState('');
@@ -743,7 +899,40 @@ function App() {
   const mp3BufferCacheRef = useRef(new Map()); // url -> AudioBuffer
   const mp3PitchBusyRef = useRef(false);
   const mp3PitchRef = useRef(0);
+  const mp3KeyByTrackRef = useRef({});
+  const mp3KeyReqRef = useRef(0);
   const [mp3FolderWritable, setMp3FolderWritable] = useState(false);
+  const [mp3PanelView, setMp3PanelView] = useState('lyrics'); // 'lyrics' | 'chords'
+  const [mp3ChordsLoading, setMp3ChordsLoading] = useState(false);
+  const [mp3ChordsStatus, setMp3ChordsStatus] = useState('');
+  const [mp3ChordsManualOpen, setMp3ChordsManualOpen] = useState(false);
+  const [mp3ChordsSearchArtist, setMp3ChordsSearchArtist] = useState('');
+  const [mp3ChordsSearchTitle, setMp3ChordsSearchTitle] = useState('');
+  const [mp3ChordsSearchResults, setMp3ChordsSearchResults] = useState([]);
+  const [mp3ChordsSearchLoading, setMp3ChordsSearchLoading] = useState(false);
+  const [mp3ChordsSelectLoading, setMp3ChordsSelectLoading] = useState(null);
+  const [mp3ChordsSearchDone, setMp3ChordsSearchDone] = useState(false);
+  const [mp3ChordTranspose, setMp3ChordTranspose] = useState(0);
+  const [mp3ChordFollowPitch, setMp3ChordFollowPitch] = useState(true);
+  const [mp3ChordFontPx, setMp3ChordFontPx] = useState(15);
+  const [mp3MusicalKey, setMp3MusicalKey] = useState(null);
+  const [mp3KeyLoading, setMp3KeyLoading] = useState(false);
+  const [songbookQuery, setSongbookQuery] = useState('');
+  const [songbook, setSongbook] = useState(null);
+  const [songbookBusy, setSongbookBusy] = useState(false);
+  const [mediaPlaylistGroups, setMediaPlaylistGroups] = useState([]);
+  const [activeMediaPlaylistId, setActiveMediaPlaylistId] = useState(null);
+  const [playlistSavingId, setPlaylistSavingId] = useState(null);
+  const [playlistSaveName, setPlaylistSaveName] = useState('');
+  const [newPlaylistOpen, setNewPlaylistOpen] = useState(false);
+  const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [playlistGroupStatus, setPlaylistGroupStatus] = useState('');
+  const [mp3LibraryView, setMp3LibraryView] = useState('play'); // 'play' | 'manage'
+  const [expandedPlaylistId, setExpandedPlaylistId] = useState(null);
+  const playlistGroupFilesRef = useRef({});
+  const playlistGroupDirRef = useRef({});
+  const playlistGroupHandlesRef = useRef({});
+  const pendingEmptyGroupIdRef = useRef(null);
 
   useEffect(() => { mp3PitchRef.current = mp3Pitch; }, [mp3Pitch]);
 
@@ -864,26 +1053,28 @@ function App() {
     }
   };
 
-  const changeMp3Pitch = async (delta) => {
+  const setMp3PitchTo = async (next, { announce = true } = {}) => {
     if (mp3CurrentIndex < 0) {
       setMp3LyricsStatus('Putar lagu dulu sebelum mengubah tangga nada.');
       return;
     }
     if (mp3PitchBusyRef.current) return;
     const prev = mp3Pitch;
-    const next = Math.max(-12, Math.min(12, mp3Pitch + delta));
-    if (next === prev) return;
+    const clamped = Math.max(-12, Math.min(12, Number(next) || 0));
+    if (clamped === prev) return;
 
     mp3PitchBusyRef.current = true;
-    setMp3Pitch(next);
+    setMp3Pitch(clamped);
     try {
       const existing = mp3PitchPlayerRef.current;
-      if (existing && next !== 0 && existing.buffer?.loaded) {
-        existing.detune = next * 100;
-        existing.grainSize = grainSizeForPitch(next);
-        setMp3LyricsStatus(`Tangga nada: ${next > 0 ? '+' : ''}${next} semitone`);
+      if (existing && clamped !== 0 && existing.buffer?.loaded) {
+        existing.detune = clamped * 100;
+        existing.grainSize = grainSizeForPitch(clamped);
+        if (announce) {
+          setMp3LyricsStatus(`Tangga nada: ${clamped > 0 ? '+' : ''}${clamped} semitone`);
+        }
       } else {
-        await applyMp3PlaylistPitch(next);
+        await applyMp3PlaylistPitch(clamped, { announce });
       }
     } catch (e) {
       console.error(e);
@@ -893,6 +1084,17 @@ function App() {
     } finally {
       mp3PitchBusyRef.current = false;
     }
+  };
+
+  const changeMp3Pitch = async (delta) => {
+    await setMp3PitchTo(mp3Pitch + delta);
+  };
+
+  const handleMp3NadaDasarChange = async (e) => {
+    const targetKey = e.target.value;
+    if (!mp3MusicalKey?.key) return;
+    try { await Tone.start(); } catch { /* ignore */ }
+    await setMp3PitchTo(semitoneOffsetToKey(mp3MusicalKey.key, targetKey));
   };
 
   const resetMp3Pitch = async () => {
@@ -907,6 +1109,63 @@ function App() {
       setMp3Pitch(prev);
     } finally {
       mp3PitchBusyRef.current = false;
+    }
+  };
+
+  const fetchMp3MusicalKey = async (track) => {
+    if (!track?.url || !track.id) {
+      setMp3MusicalKey(null);
+      setMp3KeyLoading(false);
+      return;
+    }
+    const persistKey = track.fileName || track.name;
+    const cached = mp3KeyByTrackRef.current[track.id]
+      || (persistKey ? readPlaylistKeyCache()[persistKey] : null);
+    if (cached?.key && !cached.assumed) {
+      mp3KeyByTrackRef.current[track.id] = cached;
+      setMp3MusicalKey(cached);
+      setMp3KeyLoading(false);
+      return;
+    }
+    const reqId = mp3KeyReqRef.current + 1;
+    mp3KeyReqRef.current = reqId;
+    const assumed = { key: 'C', scale: 'major', label: 'C Mayor', assumed: true };
+    setMp3MusicalKey(cached?.key ? cached : assumed);
+    setMp3KeyLoading(true);
+    try {
+      const blob = await fetch(track.url).then((r) => {
+        if (!r.ok) throw new Error(`fetch failed: ${r.status}`);
+        return r.blob();
+      });
+      if (reqId !== mp3KeyReqRef.current) return;
+      const fileName = persistKey || 'track.mp3';
+      const ext = (fileName.match(/\.(mp3|mp4|m4a|wav|ogg|flac|aac|webm)$/i) || ['.mp3'])[0].toLowerCase();
+      const maxBytes = (ext === '.mp4' || ext === '.webm' || ext === '.mkv') ? 2_000_000 : 750_000;
+      const snippet = blob.size > maxBytes ? blob.slice(0, maxBytes, blob.type || 'application/octet-stream') : blob;
+      const form = new FormData();
+      form.append('audio', snippet, fileName.replace(/[\\/:*?"<>|]/g, '_'));
+      const res = await fetch(`${API_BASE_URL}/playlist/detect-key`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (reqId !== mp3KeyReqRef.current) return;
+      const info = data.found && data.key
+        ? { key: data.key, scale: data.scale || 'major', label: data.label || formatMusicalKey(data.key, data.scale || 'major'), assumed: false }
+        : assumed;
+      mp3KeyByTrackRef.current[track.id] = info;
+      if (!info.assumed) writePlaylistKeyCache(persistKey, info);
+      if (mp3PitchRef.current === 0 || !info.assumed) {
+        setMp3MusicalKey(info);
+      }
+    } catch (e) {
+      console.warn('detect playlist key failed', e);
+      if (reqId !== mp3KeyReqRef.current) return;
+      mp3KeyByTrackRef.current[track.id] = assumed;
+      setMp3MusicalKey((prev) => prev?.key ? prev : assumed);
+    } finally {
+      if (reqId === mp3KeyReqRef.current) setMp3KeyLoading(false);
     }
   };
 
@@ -947,6 +1206,7 @@ function App() {
   const playersRef = useRef({});
   const volumeNodesRef = useRef({});
   const preFxNodesRef = useRef({});
+  const formantNodesRef = useRef({});
   const pannerNodesRef = useRef({});
   const masterEqRef = useRef(null);
   const masterEqBandsRef = useRef([]);
@@ -1010,6 +1270,10 @@ function App() {
     setMp3FolderWritable(false);
     mp3LoadedTrackRef.current = -1;
     setMp3TrackLoading(false);
+    setMp3MusicalKey(null);
+    setMp3KeyLoading(false);
+    mp3KeyByTrackRef.current = {};
+    mp3KeyReqRef.current += 1;
   }, [stopMp3PitchPlayer]);
 
   const applyLyricsToTrack = (index, data) => {
@@ -1372,11 +1636,16 @@ function App() {
   };
 
   const openManualLyricsSearch = () => {
-    const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
-    if (track) {
-      const { artist, title } = parseTrackName(track.name);
-      setMp3LyricsSearchArtist(artist);
-      setMp3LyricsSearchTitle(title);
+    if (songbook) {
+      setMp3LyricsSearchArtist(songbook.artist || '');
+      setMp3LyricsSearchTitle(songbook.title || songbook.query || '');
+    } else {
+      const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
+      if (track) {
+        const { artist, title } = parseTrackName(track.name);
+        setMp3LyricsSearchArtist(artist);
+        setMp3LyricsSearchTitle(title);
+      }
     }
     setMp3LyricsSearchResults([]);
     setMp3LyricsSearchDone(false);
@@ -1415,7 +1684,8 @@ function App() {
 
   const selectManualLyric = async (lrclibId) => {
     const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
-    if (!track) return;
+    const trackName = songbook?.query || track?.name;
+    if (!trackName) return;
     setMp3LyricsSelectLoading(lrclibId);
     try {
       const res = await fetch(`${API_BASE_URL}/lyrics/select`, {
@@ -1425,14 +1695,26 @@ function App() {
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          track_name: track.name,
+          track_name: trackName,
           lrclib_id: lrclibId,
         }),
       });
       const data = await res.json();
       if (res.ok && data.found && data.content) {
-        applyLyricsToTrack(mp3CurrentIndex, { ...data, from_cache: false });
-        setMp3TrackSync(track.id, { offsetMs: 0, speedPct: 100 });
+        const packed = lyricsFromApiData({ ...data, from_cache: false });
+        if (songbook) {
+          setSongbook((prev) => prev ? {
+            ...prev,
+            lyrics: packed,
+            lyricsNotFound: false,
+            lyricsStatus: [data.search_artist, data.search_title].filter(Boolean).join(' — ') || prev.title,
+            artist: data.search_artist || prev.artist,
+            title: data.search_title || prev.title,
+          } : prev);
+        } else {
+          applyLyricsToTrack(mp3CurrentIndex, { ...data, from_cache: false });
+          setMp3TrackSync(track.id, { offsetMs: 0, speedPct: 100 });
+        }
         setMp3LyricsManualOpen(false);
       } else {
         setMp3LyricsStatus('Gagal memuat lirik yang dipilih.');
@@ -1442,6 +1724,284 @@ function App() {
       setMp3LyricsStatus('Gagal memuat lirik yang dipilih.');
     } finally {
       setMp3LyricsSelectLoading(null);
+    }
+  };
+
+  const applyChordsToTrack = (index, data) => {
+    const chords = {
+      content: data.content || '',
+      type: data.type || 'Chords',
+      source: data.source || '',
+      sourceName: data.source_name || '',
+      sourceUrl: data.source_url || '',
+      songName: data.song_name || '',
+      artistName: data.artist_name || '',
+      rating: data.rating,
+      fromCache: !!data.from_cache,
+    };
+    const searched = data.search_artist && data.search_title
+      ? `${data.search_artist} — ${data.search_title}`
+      : (data.search_title || chords.songName);
+    const src = chords.sourceName || 'internet';
+    const savedNote = data.from_cache
+      ? `Chord dimuat dari cache (${src}).`
+      : `Chord ditemukan di ${src}.`;
+    setMp3ChordsStatus(searched ? `${searched}. ${savedNote}` : savedNote);
+    setMp3Playlist(prev => prev.map((t, i) => (
+      i === index ? { ...t, chords, chordsLoading: false, chordsNotFound: false } : t
+    )));
+  };
+
+  const fetchChordsForTrack = async (index, { refresh = false } = {}) => {
+    const track = mp3Playlist[index];
+    if (!track || track.chordsLoading) return;
+    if (track.chords && !refresh) return;
+
+    if (refresh) {
+      setMp3Playlist(prev => prev.map((t, i) => (
+        i === index ? { ...t, chords: null, chordsNotFound: false } : t
+      )));
+    }
+
+    setMp3Playlist(prev => prev.map((t, i) => (
+      i === index ? { ...t, chordsLoading: true, chordsNotFound: false } : t
+    )));
+    setMp3ChordsLoading(true);
+    setMp3ChordsStatus(refresh ? 'Mencari ulang chord/tab...' : 'Mencari chord/tabulatur (teks saja, tanpa foto)...');
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/chords/fetch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          track_name: track.name,
+          refresh,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.found && data.content) {
+        applyChordsToTrack(index, data);
+      } else {
+        setMp3Playlist(prev => prev.map((t, i) => (
+          i === index ? { ...t, chordsLoading: false, chordsNotFound: true } : t
+        )));
+        const searched = data.search_artist && data.search_title
+          ? `${data.search_artist} — ${data.search_title}`
+          : track.name;
+        setMp3ChordsStatus(searched ? `Tidak ditemukan untuk: ${searched}` : (data.message || 'Chord tidak ditemukan.'));
+      }
+    } catch (e) {
+      console.error(e);
+      setMp3Playlist(prev => prev.map((t, i) => (
+        i === index ? { ...t, chordsLoading: false } : t
+      )));
+      setMp3ChordsStatus('Gagal mencari chord. Periksa koneksi internet.');
+    } finally {
+      setMp3ChordsLoading(false);
+    }
+  };
+
+  const openManualChordsSearch = () => {
+    if (songbook) {
+      setMp3ChordsSearchArtist(songbook.artist || '');
+      setMp3ChordsSearchTitle(songbook.title || songbook.query || '');
+    } else {
+      const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
+      if (track) {
+        const { artist, title } = parseTrackName(track.name);
+        setMp3ChordsSearchArtist(artist);
+        setMp3ChordsSearchTitle(title);
+      }
+    }
+    setMp3ChordsSearchResults([]);
+    setMp3ChordsSearchDone(false);
+    setMp3ChordsManualOpen(true);
+  };
+
+  const searchManualChords = async () => {
+    if (!mp3ChordsSearchTitle.trim() && !mp3ChordsSearchArtist.trim()) return;
+    setMp3ChordsSearchLoading(true);
+    setMp3ChordsSearchResults([]);
+    setMp3ChordsSearchDone(false);
+    try {
+      const res = await fetch(`${API_BASE_URL}/chords/search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          artist: mp3ChordsSearchArtist.trim(),
+          title: mp3ChordsSearchTitle.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMp3ChordsSearchResults(data.results || []);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setMp3ChordsSearchLoading(false);
+      setMp3ChordsSearchDone(true);
+    }
+  };
+
+  const selectManualChord = async (item) => {
+    const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
+    const trackName = songbook?.query || track?.name;
+    if (!trackName) return;
+    setMp3ChordsSelectLoading(item.id || item.url);
+    try {
+      const res = await fetch(`${API_BASE_URL}/chords/select`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          track_name: trackName,
+          url: item.url,
+          source: item.source,
+          type: item.type,
+          song_name: item.song_name,
+          artist_name: item.artist_name,
+          id: item.id,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.found && data.content) {
+        if (songbook) {
+          setSongbook((prev) => prev ? {
+            ...prev,
+            chords: chordsFromApiData({ ...data, from_cache: false }),
+            chordsNotFound: false,
+            chordsStatus: `${data.source_name || 'Internet'}: ${[data.artist_name, data.song_name].filter(Boolean).join(' — ')}`,
+            artist: data.artist_name || data.search_artist || prev.artist,
+            title: data.song_name || data.search_title || prev.title,
+          } : prev);
+        } else {
+          applyChordsToTrack(mp3CurrentIndex, { ...data, from_cache: false });
+        }
+        setMp3ChordsManualOpen(false);
+      } else {
+        setMp3ChordsStatus('Gagal memuat chord yang dipilih.');
+      }
+    } catch (e) {
+      console.error(e);
+      setMp3ChordsStatus('Gagal memuat chord yang dipilih.');
+    } finally {
+      setMp3ChordsSelectLoading(null);
+    }
+  };
+
+  const downloadCurrentChords = () => {
+    const sheet = songbook?.chords || (mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.chords : null);
+    const fileBase = songbook?.query || (mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : 'chords');
+    if (!sheet?.content) return;
+    const raw = sheet.content
+      .replace(/\[\/?tab\]/gi, '')
+      .replace(/\[ch\]|\[\/ch\]/gi, '');
+    const header = [sheet.artistName, sheet.songName].filter(Boolean).join(' - ');
+    const blob = new Blob([`${header ? `${header}\n\n` : ''}${raw}`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${fileBase}.chords.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadSongbookLyrics = () => {
+    if (!songbook?.lyrics?.raw && !songbook?.lyrics?.text) return;
+    const raw = songbook.lyrics.raw || songbook.lyrics.text;
+    const blob = new Blob([raw], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${songbook.query}.${songbook.lyrics.type === 'lrc' ? 'lrc' : 'txt'}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const lookupSongbook = async (rawQuery) => {
+    const q = String(rawQuery ?? songbookQuery).trim();
+    if (!q || songbookBusy) return;
+    setSongbookQuery(q);
+    const parsed = parseTrackName(q);
+    setSongbookBusy(true);
+    setMp3LyricsManualOpen(false);
+    setMp3ChordsManualOpen(false);
+    setMp3PanelView('chords');
+    setSongbook({
+      query: q,
+      artist: parsed.artist,
+      title: parsed.title || q,
+      lyrics: null,
+      chords: null,
+      lyricsLoading: true,
+      chordsLoading: true,
+      lyricsNotFound: false,
+      chordsNotFound: false,
+      lyricsStatus: 'Mencari lirik...',
+      chordsStatus: 'Mencari chord/tabulatur...',
+    });
+    try {
+      const res = await fetch(`${API_BASE_URL}/songbook/lookup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query: q }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Gagal mencari lagu');
+      const artist = data.search_artist || parsed.artist;
+      const title = data.search_title || parsed.title || q;
+      setSongbook({
+        query: q,
+        artist,
+        title,
+        lyrics: lyricsFromApiData(data.lyrics),
+        chords: chordsFromApiData(data.chords),
+        lyricsLoading: false,
+        chordsLoading: false,
+        lyricsNotFound: !data.lyrics,
+        chordsNotFound: !data.chords,
+        lyricsStatus: data.lyrics
+          ? `${artist && title ? `${artist} — ${title}. ` : ''}Lirik ditemukan.`
+          : (data.lyrics_message || `Lirik tidak ditemukan untuk: ${q}`),
+        chordsStatus: data.chords
+          ? `${data.chords.source_name || 'Internet'}: ${[data.chords.artist_name, data.chords.song_name].filter(Boolean).join(' — ') || title}`
+          : (data.chords_message || `Chord tidak ditemukan untuk: ${q}`),
+      });
+      if (data.chords && !data.lyrics) setMp3PanelView('chords');
+      else if (data.lyrics && !data.chords) setMp3PanelView('lyrics');
+    } catch (e) {
+      console.error(e);
+      setSongbook({
+        query: q,
+        artist: parsed.artist,
+        title: parsed.title || q,
+        lyrics: null,
+        chords: null,
+        lyricsLoading: false,
+        chordsLoading: false,
+        lyricsNotFound: true,
+        chordsNotFound: true,
+        lyricsStatus: e.message || 'Gagal mencari lirik.',
+        chordsStatus: e.message || 'Gagal mencari chord.',
+      });
+    } finally {
+      setSongbookBusy(false);
     }
   };
 
@@ -1472,10 +2032,14 @@ function App() {
 
     const lrcMap = new Map();
     const txtMap = new Map();
+    const chordMap = new Map();
     allFiles.forEach(f => {
-      const base = f.name.replace(/\.(lrc|txt)$/i, '').toLowerCase();
-      if (f.name.toLowerCase().endsWith('.lrc')) lrcMap.set(base, f);
-      if (f.name.toLowerCase().endsWith('.txt')) txtMap.set(base, f);
+      const name = f.name.toLowerCase();
+      if (name.endsWith('.lrc')) lrcMap.set(name.replace(/\.lrc$/, ''), f);
+      else if (name.endsWith('.chords.txt')) chordMap.set(name.replace(/\.chords\.txt$/, ''), f);
+      else if (name.endsWith('.crd.json')) chordMap.set(name.replace(/\.crd\.json$/, ''), f);
+      else if (name.endsWith('.crd')) chordMap.set(name.replace(/\.crd$/, ''), f);
+      else if (name.endsWith('.txt')) txtMap.set(name.replace(/\.txt$/, ''), f);
     });
 
     const tracks = await Promise.all(mp3Files.map(async (file, i) => {
@@ -1484,6 +2048,32 @@ function App() {
       const baseName = file.name.replace(/\.(mp3|mp4|m4a|wav)$/i, '');
       const baseKey = baseName.toLowerCase();
       let lyrics = null;
+
+      let chords = null;
+      const chordFile = chordMap.get(baseKey);
+      if (chordFile) {
+        try {
+          const raw = (await chordFile.text()).trim();
+          if (raw) {
+            if (chordFile.name.toLowerCase().endsWith('.json')) {
+              const parsed = JSON.parse(raw);
+              if (parsed?.content) {
+                chords = {
+                  content: parsed.content,
+                  type: parsed.type || 'Chords',
+                  sourceName: parsed.source_name || 'file',
+                  sourceUrl: parsed.source_url || '',
+                  songName: parsed.song_name || '',
+                  artistName: parsed.artist_name || '',
+                  fromCache: true,
+                };
+              }
+            } else {
+              chords = { content: raw, type: 'Chords', sourceName: 'file', fromCache: true };
+            }
+          }
+        } catch { /* skip */ }
+      }
 
       const lrcFile = lrcMap.get(baseKey);
       const txtFile = txtMap.get(baseKey);
@@ -1502,7 +2092,7 @@ function App() {
         } catch { /* skip */ }
       }
 
-      return { id: `${baseName}-${i}`, name: baseName, fileName: file.name, url, lyrics };
+      return { id: `${baseName}-${i}`, name: baseName, fileName: file.name, url, lyrics, chords };
     }));
 
     setMp3FolderName(folderName);
@@ -1513,10 +2103,54 @@ function App() {
     setMp3CurrentTime(0);
     setMp3Duration(0);
     setMp3LyricsStatus('');
+    setMp3ChordsStatus('');
+    setMp3ChordsManualOpen(false);
     setMp3SaveFeedback(null);
     setMp3SavingLyrics(false);
     mp3LoadedTrackRef.current = -1;
     setMp3TrackLoading(false);
+  };
+
+  const registerLoadedPlaylistGroup = (allFiles, folderName, dirHandle, fileHandles) => {
+    const mediaFiles = allFiles
+      .filter(f => f.name.match(/\.(mp3|mp4|m4a|wav)$/i))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    if (mediaFiles.length === 0) return;
+
+    const fileNames = mediaFiles.map(f => f.name);
+    const sourceType = dirHandle ? 'directory' : (fileHandles?.length ? 'files' : 'session');
+    const fillId = pendingEmptyGroupIdRef.current;
+    pendingEmptyGroupIdRef.current = null;
+    const nextId = fillId || (crypto.randomUUID ? crypto.randomUUID() : `pl-${Date.now()}`);
+
+    playlistGroupFilesRef.current[nextId] = allFiles;
+    playlistGroupDirRef.current[nextId] = dirHandle || null;
+    playlistGroupHandlesRef.current[nextId] = fileHandles || null;
+    setActiveMediaPlaylistId(nextId);
+    setMediaPlaylistGroups((prev) => {
+      if (fillId && prev.some((g) => g.id === fillId)) {
+        return prev.map((g) => (g.id === fillId ? {
+          ...g,
+          folderName,
+          trackCount: mediaFiles.length,
+          fileNames,
+          sourceType,
+          saved: false,
+          updatedAt: Date.now(),
+        } : g));
+      }
+      return [...prev, {
+        id: nextId,
+        name: folderName || `Playlist ${prev.length + 1}`,
+        saved: false,
+        folderName,
+        trackCount: mediaFiles.length,
+        fileNames,
+        sourceType,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }];
+    });
   };
 
   const SKIP_DIR_NAMES = new Set([
@@ -1579,6 +2213,7 @@ function App() {
         }
         const writable = await ensureFolderWritable(handle);
         await loadPlaylistFromFiles(allFiles, handle.name, handle);
+        registerLoadedPlaylistGroup(allFiles, handle.name, handle, null);
         setMp3FolderWritable(writable);
         if (!writable) {
           setMp3LyricsStatus('Playlist siap. Folder ini tidak bisa ditulis — lirik bisa diunduh manual.');
@@ -1602,6 +2237,7 @@ function App() {
     mp3FolderHandleRef.current = null;
     setMp3FolderWritable(false);
     await loadPlaylistFromFiles(allFiles, folderName, null);
+    registerLoadedPlaylistGroup(allFiles, folderName, null, null);
     e.target.value = '';
   };
 
@@ -1626,6 +2262,7 @@ function App() {
         mp3FolderHandleRef.current = null;
         setMp3FolderWritable(false);
         await loadPlaylistFromFiles(files, label, null);
+        registerLoadedPlaylistGroup(files, label, null, handles);
         return;
       } catch (e) {
         if (e.name === 'AbortError') return;
@@ -1642,12 +2279,321 @@ function App() {
     mp3FolderHandleRef.current = null;
     setMp3FolderWritable(false);
     await loadPlaylistFromFiles(allFiles, label, null);
+    registerLoadedPlaylistGroup(allFiles, label, null, null);
     e.target.value = '';
+  };
+
+  const resolvePlaylistGroupFiles = async (group) => {
+    const order = group.fileNames || [];
+    const want = new Set(order);
+    const attachMissing = (files) => {
+      const have = new Set(files.map((f) => f.name));
+      const extras = (playlistGroupFilesRef.current[group.id] || []).filter(
+        (f) => (!want.size || want.has(f.name)) && !have.has(f.name)
+      );
+      const merged = extras.length ? [...files, ...extras] : files;
+      playlistGroupFilesRef.current[group.id] = merged;
+      return merged;
+    };
+
+    const cached = playlistGroupFilesRef.current[group.id];
+    const cachedMedia = (cached || []).filter((f) => f.name.match(/\.(mp3|mp4|m4a|wav)$/i));
+    const cacheComplete = cachedMedia.length > 0 && (
+      !want.size || order.every((n) => cachedMedia.some((f) => f.name === n))
+    );
+    if (cacheComplete) {
+      return { files: cached, dirHandle: playlistGroupDirRef.current[group.id] || null };
+    }
+
+    if (group.sourceType === 'directory' || playlistGroupDirRef.current[group.id]) {
+      const handle = playlistGroupDirRef.current[group.id];
+      if (!handle) throw new Error('Folder playlist tidak tersedia. Pilih ulang folder.');
+      const ok = await ensureHandlePermission(handle, 'read');
+      if (!ok) throw new Error('Izin folder ditolak. Klik Terapkan lagi, lalu izinkan akses.');
+      const allFiles = await collectFilesFromDirectory(handle);
+      const sidecars = allFiles.filter((f) => !f.name.match(/\.(mp3|mp4|m4a|wav)$/i));
+      const media = allFiles.filter((f) => want.has(f.name));
+      media.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+      const files = attachMissing(want.size ? [...media, ...sidecars] : allFiles);
+      return { files, dirHandle: handle };
+    }
+
+    if (group.sourceType === 'files' || playlistGroupHandlesRef.current[group.id]?.length) {
+      const handles = playlistGroupHandlesRef.current[group.id] || [];
+      if (!handles.length) throw new Error('File playlist tidak tersedia. Pilih ulang file.');
+      const files = [];
+      for (const handle of handles) {
+        const ok = await ensureHandlePermission(handle, 'read');
+        if (!ok) throw new Error('Izin file ditolak. Klik Terapkan lagi, lalu izinkan akses.');
+        files.push(await handle.getFile());
+      }
+      return { files: attachMissing(files), dirHandle: playlistGroupDirRef.current[group.id] || null };
+    }
+
+    if (cachedMedia.length) {
+      return { files: cached, dirHandle: playlistGroupDirRef.current[group.id] || null };
+    }
+
+    throw new Error('Playlist ini belum disimpan dan file sesinya sudah hilang. Pilih ulang media.');
+  };
+
+  const applyPlaylistGroup = async (group) => {
+    if (!group) return;
+    try {
+      setPlaylistGroupStatus(`Menerapkan "${group.name}"...`);
+      const { files, dirHandle } = await resolvePlaylistGroupFiles(group);
+      const writable = dirHandle ? await ensureFolderWritable(dirHandle) : false;
+      await loadPlaylistFromFiles(files, group.folderName || group.name, dirHandle);
+      setMp3FolderWritable(writable);
+      setActiveMediaPlaylistId(group.id);
+      setPlaylistGroupStatus(
+        group.saved
+          ? `Playlist "${group.name}" diterapkan.`
+          : `Playlist "${group.name}" diterapkan tanpa disimpan.`
+      );
+      setMp3LibraryView('play');
+    } catch (e) {
+      console.error(e);
+      const msg = e.message || 'Gagal menerapkan playlist.';
+      setPlaylistGroupStatus(msg);
+      alert(msg);
+    }
+  };
+
+  const persistGroupSnapshot = async (group, fileNames) => {
+    if (!group?.saved) return;
+    const can = playlistGroupDirRef.current[group.id] || playlistGroupHandlesRef.current[group.id]?.length;
+    if (!can) return;
+    await putPlaylistGroup({
+      id: group.id,
+      name: group.name,
+      folderName: group.folderName || group.name,
+      fileNames,
+      sourceType: playlistGroupDirRef.current[group.id]
+        ? (playlistGroupHandlesRef.current[group.id]?.length ? 'mixed' : 'directory')
+        : 'files',
+      dirHandle: playlistGroupDirRef.current[group.id] || null,
+      fileHandles: playlistGroupHandlesRef.current[group.id] || null,
+      createdAt: group.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    });
+  };
+
+  const takeHandleForSong = async (groupId, fileName) => {
+    const handles = playlistGroupHandlesRef.current[groupId] || [];
+    const kept = [];
+    let found = null;
+    for (const handle of handles) {
+      let name = '';
+      try {
+        name = (await handle.getFile()).name;
+      } catch { /* ignore */ }
+      if (!found && name === fileName) found = handle;
+      else kept.push(handle);
+    }
+    if (found) {
+      playlistGroupHandlesRef.current[groupId] = kept;
+      return found;
+    }
+    const dir = playlistGroupDirRef.current[groupId];
+    if (dir?.getFileHandle) {
+      try {
+        return await dir.getFileHandle(fileName);
+      } catch { /* file mungkin di subfolder */ }
+    }
+    return null;
+  };
+
+  const movePlaylistSong = async (fromGroup, fileName, toGroupId) => {
+    const toGroup = mediaPlaylistGroups.find((g) => g.id === toGroupId);
+    if (!fromGroup || !toGroup || fromGroup.id === toGroupId || !fileName) return;
+    if ((toGroup.fileNames || []).includes(fileName)) {
+      setPlaylistGroupStatus(`"${fileName}" sudah ada di playlist "${toGroup.name}".`);
+      return;
+    }
+
+    try {
+      setPlaylistGroupStatus(`Memindahkan lagu ke "${toGroup.name}"...`);
+      await resolvePlaylistGroupFiles(fromGroup).catch(() => null);
+      await resolvePlaylistGroupFiles(toGroup).catch(() => null);
+
+      const fromFiles = playlistGroupFilesRef.current[fromGroup.id] || [];
+      const moving = fromFiles.filter((f) => f.name === fileName);
+      if (!moving.length) {
+        throw new Error('File lagu tidak ditemukan di playlist asal. Terapkan dulu playlist itu.');
+      }
+
+      playlistGroupFilesRef.current[fromGroup.id] = fromFiles.filter((f) => f.name !== fileName);
+      const toFiles = playlistGroupFilesRef.current[toGroup.id] || [];
+      playlistGroupFilesRef.current[toGroup.id] = [...toFiles.filter((f) => f.name !== fileName), ...moving];
+
+      const movedHandle = await takeHandleForSong(fromGroup.id, fileName);
+      if (movedHandle) {
+        const destHandles = playlistGroupHandlesRef.current[toGroup.id] || [];
+        playlistGroupHandlesRef.current[toGroup.id] = [...destHandles, movedHandle];
+      }
+
+      const fromNames = (fromGroup.fileNames || []).filter((n) => n !== fileName);
+      const toNames = [...(toGroup.fileNames || []), fileName];
+
+      setMediaPlaylistGroups((prev) => prev.map((g) => {
+        if (g.id === fromGroup.id) {
+          return { ...g, fileNames: fromNames, trackCount: fromNames.length, updatedAt: Date.now() };
+        }
+        if (g.id === toGroup.id) {
+          return { ...g, fileNames: toNames, trackCount: toNames.length, updatedAt: Date.now() };
+        }
+        return g;
+      }));
+
+      await persistGroupSnapshot({ ...fromGroup, fileNames: fromNames }, fromNames);
+      await persistGroupSnapshot({ ...toGroup, fileNames: toNames }, toNames);
+
+      if (activeMediaPlaylistId === fromGroup.id) {
+        const idx = mp3Playlist.findIndex((t) => t.fileName === fileName);
+        if (idx >= 0) removeMp3Track(idx, { stopPropagation() {} });
+      } else if (activeMediaPlaylistId === toGroup.id) {
+        const { files, dirHandle } = await resolvePlaylistGroupFiles({ ...toGroup, fileNames: toNames });
+        const writable = dirHandle ? await ensureFolderWritable(dirHandle) : false;
+        await loadPlaylistFromFiles(files, toGroup.folderName || toGroup.name, dirHandle);
+        setMp3FolderWritable(writable);
+      }
+
+      setPlaylistGroupStatus(`Lagu dipindah ke "${toGroup.name}".`);
+    } catch (e) {
+      console.error(e);
+      const msg = e.message || 'Gagal memindahkan lagu.';
+      setPlaylistGroupStatus(msg);
+      alert(msg);
+    }
+  };
+
+  const playlistGroupCanSave = (group) => !!(
+    playlistGroupDirRef.current[group.id]
+    || playlistGroupHandlesRef.current[group.id]?.length
+  );
+
+  const savePlaylistGroup = async (group, nameOverride) => {
+    if (!group) return;
+    if (!playlistGroupCanSave(group)) {
+      const msg = 'Simpan playlist hanya untuk media yang dipilih lewat Chrome/Edge (Pilih Folder atau Pilih File).';
+      setPlaylistGroupStatus(msg);
+      alert(msg);
+      return;
+    }
+    const name = String(nameOverride ?? playlistSaveName ?? group.name).trim();
+    if (!name) return;
+    const record = {
+      id: group.id,
+      name,
+      folderName: group.folderName || name,
+      fileNames: group.fileNames || [],
+      sourceType: playlistGroupDirRef.current[group.id] ? 'directory' : 'files',
+      dirHandle: playlistGroupDirRef.current[group.id] || null,
+      fileHandles: playlistGroupHandlesRef.current[group.id] || null,
+      createdAt: group.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+    try {
+      await putPlaylistGroup(record);
+      setMediaPlaylistGroups((prev) => prev.map((g) => (
+        g.id === group.id
+          ? { ...g, name, saved: true, sourceType: record.sourceType, updatedAt: record.updatedAt }
+          : g
+      )));
+      setPlaylistSavingId(null);
+      setPlaylistSaveName('');
+      setPlaylistGroupStatus(`Playlist "${name}" disimpan. Bisa diterapkan kapan saja.`);
+    } catch (e) {
+      console.error(e);
+      alert(`Gagal menyimpan playlist: ${e.message || e}`);
+    }
+  };
+
+  const removeMediaPlaylistGroup = async (group) => {
+    if (!group) return;
+    if (!window.confirm(`Hapus playlist "${group.name}"? File media di disk tidak dihapus.`)) return;
+    try {
+      if (group.saved) await deletePlaylistGroup(group.id);
+    } catch (e) {
+      console.warn(e);
+    }
+    delete playlistGroupFilesRef.current[group.id];
+    delete playlistGroupDirRef.current[group.id];
+    delete playlistGroupHandlesRef.current[group.id];
+    setMediaPlaylistGroups((prev) => prev.filter((g) => g.id !== group.id));
+    if (activeMediaPlaylistId === group.id) setActiveMediaPlaylistId(null);
+    setPlaylistGroupStatus(`Playlist "${group.name}" dihapus.`);
+  };
+
+  const confirmNewPlaylistGroup = () => {
+    const name = newPlaylistName.trim() || `Playlist ${mediaPlaylistGroups.length + 1}`;
+    const id = crypto.randomUUID ? crypto.randomUUID() : `pl-${Date.now()}`;
+    pendingEmptyGroupIdRef.current = id;
+    setMediaPlaylistGroups((prev) => [...prev, {
+      id,
+      name,
+      saved: false,
+      folderName: '',
+      trackCount: 0,
+      fileNames: [],
+      sourceType: 'session',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]);
+    setActiveMediaPlaylistId(id);
+    setNewPlaylistOpen(false);
+    setNewPlaylistName('');
+    setPlaylistGroupStatus(`"${name}" dibuat. Pilih folder atau file, lalu Terapkan tanpa simpan atau Simpan.`);
   };
 
   useEffect(() => {
     mp3ActiveLyricRef.current?.scrollIntoView({ behavior: 'auto', block: 'center' });
   }, [mp3ActiveLyricIndex, mp3CurrentIndex]);
+
+  const mp3CurrentTrackId = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.id : null;
+  const mp3CurrentTrackUrl = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.url : null;
+  useEffect(() => {
+    const track = mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex] : null;
+    if (!track?.url) {
+      setMp3MusicalKey(null);
+      setMp3KeyLoading(false);
+      return;
+    }
+    void fetchMp3MusicalKey(track);
+    // track identity only — jangan ulang saat lirik/chord berubah
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mp3CurrentTrackId, mp3CurrentTrackUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const rows = await listSavedPlaylistGroups();
+      if (cancelled || !rows.length) return;
+      const groups = rows.map((row) => {
+        playlistGroupDirRef.current[row.id] = row.dirHandle || null;
+        playlistGroupHandlesRef.current[row.id] = row.fileHandles || null;
+        playlistGroupFilesRef.current[row.id] = [];
+        return {
+          id: row.id,
+          name: row.name,
+          saved: true,
+          folderName: row.folderName || '',
+          trackCount: (row.fileNames || []).length,
+          fileNames: row.fileNames || [],
+          sourceType: row.sourceType,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        };
+      });
+      setMediaPlaylistGroups((prev) => {
+        const savedIds = new Set(groups.map((g) => g.id));
+        const sessionOnly = prev.filter((g) => !g.saved && !savedIds.has(g.id));
+        return [...groups, ...sessionOnly];
+      });
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     return () => clearMp3Playlist();
@@ -1795,6 +2741,7 @@ function App() {
     setMp3SaveFeedback(null);
     setMp3SavingLyrics(false);
     mp3RetriedLyricsRef.current = null;
+    setSongbook(null);
 
     const reapplyPitchIfNeeded = async () => {
       const pitch = mp3PitchRef.current;
@@ -1810,6 +2757,7 @@ function App() {
       setMp3IsPlaying(true);
       setMp3TrackLoading(false);
       scheduleLyricsFetch(index, audio.duration || 0);
+      if (mp3PanelView === 'chords') fetchChordsForTrack(index);
       void reapplyPitchIfNeeded();
     };
 
@@ -1840,6 +2788,9 @@ function App() {
       }
       if (!track.lyrics && !track.lyricsLoading) {
         scheduleLyricsFetch(index, audio.duration || 0);
+      }
+      if (mp3PanelView === 'chords' && !track.chords && !track.chordsLoading) {
+        fetchChordsForTrack(index);
       }
       return;
     }
@@ -2082,6 +3033,25 @@ function App() {
     setIsRecordingKaraoke(false);
   };
 
+  const disposeFormantNodes = () => {
+    Object.values(formantNodesRef.current).forEach(disposeFormantCompensator);
+    formantNodesRef.current = {};
+  };
+
+  const applyPitchToGrainPlayers = (semitones) => {
+    const next = Number(semitones) || 0;
+    const cents = next * 100;
+    const gs = grainSizeForPitch(next);
+    const overlap = grainOverlapForPitch(next);
+    Object.entries(playersRef.current).forEach(([id, p]) => {
+      if (!p) return;
+      if (p.detune !== undefined) p.detune = cents;
+      if ('grainSize' in p) p.grainSize = gs;
+      if ('overlap' in p) p.overlap = overlap;
+      setFormantCompensation(formantNodesRef.current[id], next, formantStrengthForStem(id));
+    });
+  };
+
   const disposeMasterChain = () => {
     disposeMic();
     if (masterEqRef.current) { masterEqRef.current.dispose(); masterEqRef.current = null; }
@@ -2113,6 +3083,7 @@ function App() {
       Object.values(volumeNodesRef.current).forEach(v => { try { v.dispose(); } catch {} });
       disposeVocalPitchAnalyser();
       Object.values(preFxNodesRef.current).forEach(g => { try { g.dispose(); } catch {} });
+      disposeFormantNodes();
       disposeMasterChain();
     };
   }, []);
@@ -2172,11 +3143,9 @@ function App() {
       if (res.ok && data.status === 'success') {
         setLicenseMessage(data.message);
         setLicenseMessageType('success');
-        setLicenseInfo(data.info);
-        // Re-check license after short delay
-        setTimeout(() => {
-          setLicenseStatus('valid');
-        }, 1500);
+        setLicenseInfo((prev) => ({ ...(data.info || {}), app_version: prev?.app_version }));
+        setLicenseStatus('valid');
+        setTimeout(() => { checkLicenseStatus(); }, 400);
       } else {
         setLicenseMessage(data.message || 'Aktivasi gagal');
         setLicenseMessageType('error');
@@ -2444,6 +3413,11 @@ function App() {
             setEta(data.eta);
           }
           if (data.status === 'done') {
+            const detected = applyMusicalKeyFromMeta(data.musical_key);
+            if (detected) {
+              setStemMusicalKey(detected);
+              setLastMusicalKey(detected);
+            }
             setStatus('loading_audio');
             setProgressText('Memuat file audio ke browser...');
             clearInterval(interval);
@@ -2775,6 +3749,7 @@ function App() {
     setOriginalPlaying(false);
     
     resetStemLyrics();
+    setStemMusicalKey(null);
     setStatus('uploading');
     setProgressText('Mengunggah file...');
     setProgress(0);
@@ -2933,13 +3908,9 @@ function App() {
     const nextTempo = settings.tempo ?? 1;
     setPitch(nextPitch);
     setTempo(nextTempo);
-    const cents = nextPitch * 100;
-    const gs = grainSizeForPitch(nextPitch);
+    applyPitchToGrainPlayers(nextPitch);
     Object.values(playersRef.current).forEach((p) => {
-      if (!p) return;
-      if (p.playbackRate !== undefined) p.playbackRate = nextTempo;
-      if (p.detune !== undefined) p.detune = cents;
-      if ('grainSize' in p) p.grainSize = gs;
+      if (p && p.playbackRate !== undefined) p.playbackRate = nextTempo;
     });
     if (stemVideoRef.current) stemVideoRef.current.playbackRate = nextTempo;
 
@@ -3106,6 +4077,7 @@ function App() {
     Object.values(playersRef.current).forEach((p) => { try { p.dispose(); } catch {} });
     Object.values(volumeNodesRef.current).forEach((v) => { try { v.dispose(); } catch {} });
     Object.values(pannerNodesRef.current).forEach((p) => { try { p.dispose(); } catch {} });
+    disposeFormantNodes();
     disposeVocalPitchAnalyser();
     disposeMasterChain();
     playersRef.current = {};
@@ -3120,6 +4092,7 @@ function App() {
     setOriginalUrl(null);
     setFileId(null);
     setStemTrackName('');
+    setStemMusicalKey(null);
     resetStemLyrics();
     setEditingStemProjectName(false);
     setEditingProjectNameId(null);
@@ -3136,20 +4109,28 @@ function App() {
   };
 
   const loadAudioStems = async (id, options = {}) => {
-    let { displayName = null, originalName = null, settings = null } = options;
-    
-    if (!originalName) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/projects/${id}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          originalName = data.original_name || null;
+    let { displayName = null, originalName = null, settings = null, musicalKey = null } = options;
+    const fromOptions = applyMusicalKeyFromMeta(musicalKey);
+    if (fromOptions) {
+      setStemMusicalKey(fromOptions);
+      setLastMusicalKey(fromOptions);
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/projects/${id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        originalName = originalName || data.original_name || null;
+        const detected = applyMusicalKeyFromMeta(data.musical_key);
+        if (detected) {
+          setStemMusicalKey(detected);
+          setLastMusicalKey(detected);
         }
-      } catch (e) {
-        console.error("Failed to fetch project meta for originalName", e);
+        if (!settings && data.settings) settings = data.settings;
       }
+    } catch (e) {
+      console.error("Failed to fetch project meta", e);
     }
     setStemOriginalName(originalName);
     try {
@@ -3158,6 +4139,7 @@ function App() {
       Object.values(playersRef.current).forEach(p => { try { p.dispose(); } catch {} });
       Object.values(volumeNodesRef.current).forEach(v => { try { v.dispose(); } catch {} });
       Object.values(pannerNodesRef.current).forEach(p => { try { p.dispose(); } catch {} });
+      disposeFormantNodes();
       disposeVocalPitchAnalyser();
       disposeMasterChain();
 
@@ -3266,6 +4248,7 @@ function App() {
       const newPlayers = {};
       const newVolumes = {};
       const newPreFxs = {};
+      const newFormants = {};
       const newPanners = {};
       const initVols = {};
       const initMutes = {};
@@ -3287,6 +4270,9 @@ function App() {
         }
 
         const preFxNode = new Tone.Gain(1);
+        const formantFx = createFormantCompensator();
+        setFormantCompensation(formantFx, loadPitch, formantStrengthForStem(inst.id));
+        formantFx.output.connect(preFxNode);
         
         if (inst.id === 'vocals') {
           preFxNode.connect(vocalGate);
@@ -3303,7 +4289,7 @@ function App() {
             playbackRate: loadTempo,
             detune: loadPitch * 100,
             grainSize: grainSizeForPitch(loadPitch),
-            overlap: GRAIN_OVERLAP,
+            overlap: grainOverlapForPitch(loadPitch),
             onload: () => {
               loadedCount += 1;
               setProgressText(`Memuat ${inst.label}... (${loadedCount}/${INSTRUMENTS.length})`);
@@ -3312,12 +4298,13 @@ function App() {
             onerror: (err) => reject(new Error(`Gagal memuat ${inst.label}: ${err?.message || 'file tidak ditemukan'}`)),
           });
           
-          chainSource.connect(preFxNode);
+          chainSource.connect(formantFx.input);
           chainSource.sync().start(0);
           
           newPlayers[inst.id] = chainSource;
           newVolumes[inst.id] = volNode;
           newPreFxs[inst.id] = preFxNode;
+          newFormants[inst.id] = formantFx;
           newPanners[inst.id] = panNode;
           initVols[inst.id] = 0;
           initMutes[inst.id] = false;
@@ -3330,6 +4317,7 @@ function App() {
       playersRef.current = newPlayers;
       volumeNodesRef.current = newVolumes;
       preFxNodesRef.current = newPreFxs;
+      formantNodesRef.current = newFormants;
       pannerNodesRef.current = newPanners;
 
       setPlayers(newPlayers);
@@ -3398,6 +4386,7 @@ function App() {
     setIsPlaying(false);
     Object.values(playersRef.current).forEach((p) => { try { p.dispose(); } catch {} });
     Object.values(volumeNodesRef.current).forEach((v) => { try { v.dispose(); } catch {} });
+    disposeFormantNodes();
     disposeMasterChain();
 
     resetStemLyrics();
@@ -3429,6 +4418,7 @@ function App() {
       displayName: project.display_name,
       originalName: project.original_name,
       settings,
+      musicalKey: project.musical_key,
     });
     setTimeout(() => {
       skipSettingsSaveRef.current = false;
@@ -3616,16 +4606,20 @@ function App() {
   };
 
   // Pitch sekarang real-time: cukup ubah properti detune & grainSize tanpa rebuild.
+  const applyStemPitch = (val) => {
+    const next = Number(val) || 0;
+    setPitch(next);
+    applyPitchToGrainPlayers(next);
+  };
+
   const handlePitchChange = (e) => {
-    const val = parseFloat(e.target.value);
-    setPitch(val);
-    const cents = val * 100;
-    const gs = grainSizeForPitch(val);
-    Object.values(playersRef.current).forEach((p) => {
-      if (!p) return;
-      if (p.detune !== undefined) p.detune = cents;
-      if ('grainSize' in p) p.grainSize = gs;
-    });
+    applyStemPitch(parseFloat(e.target.value));
+  };
+
+  const handleNadaDasarChange = (e) => {
+    const targetKey = e.target.value;
+    if (!stemMusicalKey?.key) return;
+    applyStemPitch(semitoneOffsetToKey(stemMusicalKey.key, targetKey));
   };
 
   const handleTempoChange = (e) => {
@@ -4545,22 +5539,22 @@ function App() {
             <Download size={18} /> Web Audio Converter
           </button>
           <button
-            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
-            onClick={() => setActiveTab('style')}
-          >
-            <Sparkles size={18} /> AI Partitur
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
             <Layers size={18} /> DAW Studio
           </button>
           <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> AI Partitur
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> Media Playlist
+            <ListMusic size={18} /> Media Playlist, Lirik & Cord
           </button>
         </nav>
       )}
@@ -4597,22 +5591,22 @@ function App() {
             <Download size={18} /> Web Audio Converter
           </button>
           <button
-            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
-            onClick={() => setActiveTab('style')}
-          >
-            <Sparkles size={18} /> Guitar Gear Detector
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
             <Layers size={18} /> DAW Studio
           </button>
           <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> Guitar Gear Detector
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> Media Playlist
+            <ListMusic size={18} /> Media Playlist, Lirik & Cord
           </button>
         </nav>
       )}
@@ -4726,7 +5720,7 @@ function App() {
               <ChevronDown size={16} />
             </button>
           ) : (
-            <div className="license-info-card" style={{ maxWidth: '500px', width: '100%', marginBottom: '0.5rem', padding: '0.8rem 1.2rem' }}>
+            <div className="license-info-card license-info-card--renew">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                   <CheckCircle size={16} color="#2ec4b6" />
@@ -4750,6 +5744,32 @@ function App() {
                     <ChevronUp size={16} />
                   </button>
                 </div>
+              </div>
+              <div className="license-renew-section">
+                <div className="license-renew-hwid" onClick={copyHardwareId} title="Klik untuk menyalin">
+                  <Shield size={12} />
+                  <span>{hardwareId || 'Memuat Hardware ID...'}</span>
+                  <span className="license-renew-copy">{hwidCopied ? 'Tersalin' : 'Salin ID'}</span>
+                </div>
+                {isActivating ? (
+                  <div className="license-renew-busy">
+                    <Loader2 size={16} className="spinner" />
+                    Mengaktifkan lisensi baru...
+                  </div>
+                ) : (
+                  <label className="license-renew-upload">
+                    <Upload size={16} />
+                    <span>Perpanjang / ganti file lisensi (.lic)</span>
+                    <input type="file" accept=".lic" onChange={handleLicenseActivate} />
+                  </label>
+                )}
+                {licenseMessage && (
+                  <div className={`license-message ${licenseMessageType}`}>
+                    {licenseMessageType === 'success' && <CheckCircle size={16} />}
+                    {licenseMessageType === 'error' && <AlertTriangle size={16} />}
+                    {licenseMessage}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4778,22 +5798,22 @@ function App() {
             <Download size={18} /> Web Audio Converter
           </button>
           <button
-            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
-            onClick={() => setActiveTab('style')}
-          >
-            <Sparkles size={18} /> Guitar Gear Detector
-          </button>
-          <button
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
             <Layers size={18} /> DAW Studio
           </button>
           <button
+            className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
+            onClick={() => setActiveTab('style')}
+          >
+            <Sparkles size={18} /> Guitar Gear Detector
+          </button>
+          <button
             className={`tab-btn ${activeTab === 'playlist' ? 'active' : ''}`}
             onClick={() => setActiveTab('playlist')}
           >
-            <ListMusic size={18} /> Media Playlist
+            <ListMusic size={18} /> Media Playlist, Lirik & Cord
           </button>
         </nav>
         </div>
@@ -5025,7 +6045,10 @@ function App() {
                           <Music size={20} />
                           <div className="saved-project-info">
                             <strong>{project.display_name || project.file_id}</strong>
-                            <span>{formatProjectDate(project.separated_at || project.created_at)}</span>
+                            <span>
+                              {formatProjectDate(project.separated_at || project.created_at)}
+                              {project.musical_key?.key ? ` · ${formatMusicalKey(project.musical_key.key, project.musical_key.scale)}` : ''}
+                            </span>
                           </div>
                         </button>
                         <button
@@ -5189,7 +6212,9 @@ function App() {
                 <div className="progress-section">
                   <div className="progress-info">
                     <span className="progress-percent">{progress}% Selesai</span>
-                    <span className="progress-eta">Sisa waktu: {eta}</span>
+                    <span className="progress-eta">
+                      {String(eta || '').toLowerCase().includes('nada') ? eta : `Sisa waktu: ${eta}`}
+                    </span>
                   </div>
                   <div className="progress-bar-container">
                     <div 
@@ -5199,7 +6224,9 @@ function App() {
                   </div>
                   {progress >= 100 && (
                     <div style={{ marginTop: '15px', color: '#ff9f1c', fontWeight: 'bold', textAlign: 'center', animation: 'pulse 1.5s infinite' }}>
-                      Mohon Tunggu Sampai Proses Selesai...
+                      {String(eta || '').toLowerCase().includes('nada')
+                        ? 'Menganalisis nada dasar dari stem bass, piano, dan gitar...'
+                        : 'Mohon Tunggu Sampai Proses Selesai...'}
                     </div>
                   )}
                 </div>
@@ -5209,6 +6236,7 @@ function App() {
                   <div className={`step ${progress >= 30 ? 'active' : ''}`}>2. Mengurai Frekuensi Audio</div>
                   <div className={`step ${progress >= 60 ? 'active' : ''}`}>3. Memisahkan Vokal, Drum, Bass & Gitar</div>
                   <div className={`step ${progress >= 90 ? 'active' : ''}`}>4. Mengekstrak Piano & Instrumen Lainnya</div>
+                  <div className={`step ${progress >= 100 ? 'active' : ''}`}>5. Menganalisis nada dasar lagu</div>
                 </div>
               </>
             )}
@@ -5276,6 +6304,35 @@ function App() {
                     </button>
                   </div>
                   <div className="global-sliders" style={{ margin: 0 }}>
+                    {stemMusicalKey?.key && (
+                      <div
+                        className="stem-key-badge stem-key-badge--picker"
+                        title="Pilih nada dasar: lagu ikut pindah sesuai kunci yang dipilih"
+                      >
+                        <Music size={16} />
+                        <div className="stem-key-badge-text">
+                          <span>Nada Dasar</span>
+                          <label className="stem-key-select-wrap">
+                            <select
+                              className="stem-key-select"
+                              value={shiftMusicalKey(stemMusicalKey.key, pitch)}
+                              onChange={handleNadaDasarChange}
+                              aria-label="Pilih nada dasar lagu"
+                            >
+                              {KEY_NOTE_NAMES.map((note) => (
+                                <option key={note} value={note}>
+                                  {formatMusicalKey(note, stemMusicalKey.scale)}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown size={14} className="stem-key-select-caret" />
+                          </label>
+                          {pitch !== 0 && (
+                            <em>asli {formatMusicalKey(stemMusicalKey.key, stemMusicalKey.scale)}</em>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="slider-group">
                       <label>Pitch: {pitch > 0 ? '+' : ''}{pitch} Semitones</label>
                       <input type="range" min="-12" max="12" step="1" value={pitch} onChange={handlePitchChange} className="accent-slider" />
@@ -7063,19 +8120,45 @@ function App() {
         ) : activeTab === 'playlist' ? (
           <div className="playlist-container animate-fade-in">
             <div className="mp3-playlist-card glass-panel">
+              {mp3LibraryView === 'manage' ? (
+              <>
               <div className="mp3-playlist-header">
+                <button type="button" className="mp3-back-player-btn" onClick={() => setMp3LibraryView('play')}>
+                  <ArrowLeft size={18} /> Player
+                </button>
                 <ListMusic size={40} className="yt-icon" />
                 <div>
-                  <h3>Media Playlist (MP3 & MP4)</h3>
-                  <p>Pilih folder berisi file media, buat playlist, lalu putar.</p>
+                  <h3>Kelola Playlist</h3>
+                  <p>Buat grup lagu, terapkan tanpa simpan, atau simpan seperti Spotify.</p>
                 </div>
               </div>
+
+              {mp3Playlist.length > 0 && (
+                <div className="mp3-manage-now">
+                  <span>
+                    Sedang diputar: <strong>{mp3CurrentIndex >= 0 ? mp3Playlist[mp3CurrentIndex]?.name : mp3FolderName}</strong>
+                  </span>
+                  <button type="button" className="mp3-back-player-btn" onClick={() => setMp3LibraryView('play')}>
+                    Kembali ke Player
+                  </button>
+                </div>
+              )}
 
               <div className="mp3-folder-info glass-panel">
                 <p><strong>💡 2 Cara Memilih Media:</strong></p>
                 <p>• <strong>Pilih 1 Folder Penuh:</strong> Memindai seluruh folder beserta subfolder. <em>(Saat dialog terbuka Windows menyembunyikan file di dalamnya, itu normal — cukup klik Select Folder).</em></p>
                 <p>• <strong>Pilih File Media:</strong> Menampilkan daftar file langsung di dialog Windows. Anda bisa memilih <strong>1 lagu</strong>, menahan <strong>Ctrl</strong> untuk memilih <strong>beberapa lagu acak</strong>, atau menahan <strong>Shift</strong> untuk memilih <strong>rentang lagu (from song to song)</strong>.</p>
               </div>
+              </>
+              ) : (
+              <div className="mp3-playlist-header">
+                <ListMusic size={40} className="yt-icon" />
+                <div>
+                  <h3>Media Playlist, Lirik & Cord</h3>
+                  <p>Putar lagu, lihat lirik &amp; chord. Kelola playlist di halaman terpisah.</p>
+                </div>
+              </div>
+              )}
 
               <input
                 ref={mp3FolderInputRef}
@@ -7095,6 +8178,8 @@ function App() {
                 onChange={handleMp3FileSelect}
               />
 
+              {mp3LibraryView === 'manage' ? (
+              <>
               <div className="mp3-playlist-actions">
                 <button className="process-btn" onClick={pickMp3Folder} title="Pilih 1 folder penuh untuk dimasukkan ke playlist">
                   <FolderOpen size={18} /> Pilih 1 Folder Penuh
@@ -7104,7 +8189,7 @@ function App() {
                 </button>
                 {mp3Playlist.length > 0 && (
                   <button className="cancel-btn" onClick={clearMp3Playlist}>
-                    <X size={16} /> Hapus Playlist
+                    <X size={16} /> Kosongkan Player
                   </button>
                 )}
               </div>
@@ -7114,14 +8199,253 @@ function App() {
                 {mp3FolderWritable && <span className="mp3-folder-writable"> ✓ Folder siap menyimpan lirik</span>}
               </p>
 
+              <div className="media-pl-groups">
+                <div className="media-pl-groups-head">
+                  <h4><ListMusic size={16} /> Playlist Saya</h4>
+                  <button
+                    type="button"
+                    className="cancel-btn"
+                    onClick={() => {
+                      setNewPlaylistOpen(true);
+                      setNewPlaylistName(`Playlist ${mediaPlaylistGroups.length + 1}`);
+                    }}
+                  >
+                    <Plus size={14} /> Playlist Baru
+                  </button>
+                </div>
+                <p className="media-pl-groups-hint">
+                  Buat beberapa grup lagu. Buka panah untuk melihat lagu, lalu <strong>Pindah ke...</strong> untuk memindah ke playlist lain.
+                  <strong> Terapkan</strong> memutar tanpa menyimpan. <strong>Simpan</strong> agar tetap ada setelah ditutup.
+                </p>
+                {newPlaylistOpen && (
+                  <div className="media-pl-new">
+                    <input
+                      type="text"
+                      value={newPlaylistName}
+                      onChange={(e) => setNewPlaylistName(e.target.value)}
+                      placeholder="Nama playlist (mis. Rock 90s)"
+                      maxLength={80}
+                      onKeyDown={(e) => e.key === 'Enter' && confirmNewPlaylistGroup()}
+                    />
+                    <button type="button" className="process-btn" onClick={confirmNewPlaylistGroup}>Buat</button>
+                    <button type="button" className="cancel-btn" onClick={() => setNewPlaylistOpen(false)}>Batal</button>
+                  </div>
+                )}
+                {mediaPlaylistGroups.length === 0 ? (
+                  <p className="media-pl-empty">
+                    Belum ada grup. Pilih folder/file — langsung diterapkan sebagai sesi.
+                    Klik Simpan jika ingin dipakai lagi nanti.
+                  </p>
+                ) : (
+                  <ul className="media-pl-list">
+                    {mediaPlaylistGroups.map((group) => (
+                      <li
+                        key={group.id}
+                        className={`media-pl-item${group.id === activeMediaPlaylistId ? ' active' : ''}`}
+                      >
+                        <div className="media-pl-item-row">
+                        <button
+                          type="button"
+                          className="media-pl-expand-btn"
+                          title={expandedPlaylistId === group.id ? 'Sembunyikan lagu' : 'Lihat lagu'}
+                          onClick={() => setExpandedPlaylistId((id) => id === group.id ? null : group.id)}
+                        >
+                          <ChevronDown
+                            size={16}
+                            style={{ transform: expandedPlaylistId === group.id ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s' }}
+                          />
+                        </button>
+                        <div className="media-pl-item-main">
+                          <strong>{group.name}</strong>
+                          <span>
+                            {group.trackCount} lagu
+                            {' · '}
+                            {group.saved ? 'Tersimpan' : 'Belum disimpan'}
+                            {group.id === activeMediaPlaylistId ? ' · Sedang dipakai' : ''}
+                          </span>
+                        </div>
+                        <div className="media-pl-item-actions">
+                          {playlistSavingId === group.id ? (
+                            <>
+                              <input
+                                type="text"
+                                className="media-pl-save-input"
+                                value={playlistSaveName}
+                                onChange={(e) => setPlaylistSaveName(e.target.value)}
+                                placeholder="Nama playlist"
+                                maxLength={80}
+                                onKeyDown={(e) => e.key === 'Enter' && savePlaylistGroup(group)}
+                              />
+                              <button
+                                type="button"
+                                className="process-btn"
+                                onClick={() => savePlaylistGroup(group)}
+                              >
+                                <Save size={14} /> Simpan
+                              </button>
+                              <button
+                                type="button"
+                                className="cancel-btn"
+                                onClick={() => setPlaylistSavingId(null)}
+                              >
+                                Batal
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="process-btn"
+                                disabled={!group.trackCount}
+                                title="Putar playlist ini tanpa menyimpan"
+                                onClick={() => applyPlaylistGroup(group)}
+                              >
+                                Terapkan
+                              </button>
+                              <button
+                                type="button"
+                                className="cancel-btn"
+                                title={group.saved ? 'Perbarui playlist tersimpan' : 'Simpan playlist ini'}
+                                onClick={() => {
+                                  setPlaylistSavingId(group.id);
+                                  setPlaylistSaveName(group.name);
+                                }}
+                              >
+                                <Save size={14} /> {group.saved ? 'Update' : 'Simpan'}
+                              </button>
+                              <button
+                                type="button"
+                                className="mp3-track-delete-btn"
+                                title="Hapus grup playlist"
+                                onClick={() => removeMediaPlaylistGroup(group)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                        </div>
+                        {expandedPlaylistId === group.id && (
+                          <ul className="media-pl-songs">
+                            {(group.fileNames || []).length === 0 ? (
+                              <li className="media-pl-song-empty">Belum ada lagu di playlist ini.</li>
+                            ) : (
+                              (group.fileNames || []).map((fileName) => (
+                                <li key={fileName} className="media-pl-song">
+                                  <span className="media-pl-song-name" title={fileName}>
+                                    {fileName.replace(/\.(mp3|mp4|m4a|wav)$/i, '')}
+                                  </span>
+                                  {mediaPlaylistGroups.filter((g) => g.id !== group.id).length === 0 ? (
+                                    <span className="media-pl-song-hint">Buat playlist lain untuk memindah</span>
+                                  ) : (
+                                    <select
+                                      className="media-pl-move-select"
+                                      defaultValue=""
+                                      aria-label={`Pindahkan ${fileName}`}
+                                      onChange={(e) => {
+                                        const toId = e.target.value;
+                                        e.target.value = '';
+                                        if (toId) movePlaylistSong(group, fileName, toId);
+                                      }}
+                                    >
+                                      <option value="" disabled>Pindah ke...</option>
+                                      {mediaPlaylistGroups.filter((g) => g.id !== group.id).map((g) => (
+                                        <option key={g.id} value={g.id}>{g.name}</option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </li>
+                              ))
+                            )}
+                          </ul>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {playlistGroupStatus && (
+                  <p className="media-pl-status">{playlistGroupStatus}</p>
+                )}
+              </div>
+              </>
+              ) : (
+              <>
+              <div className="mp3-play-toolbar">
+                <button
+                  type="button"
+                  className="process-btn"
+                  onClick={() => setMp3LibraryView('manage')}
+                >
+                  <ListMusic size={16} /> Kelola Playlist
+                </button>
+                <button
+                  type="button"
+                  className="cancel-btn"
+                  onClick={() => {
+                    setNewPlaylistOpen(true);
+                    setNewPlaylistName(`Playlist ${mediaPlaylistGroups.length + 1}`);
+                    setMp3LibraryView('manage');
+                  }}
+                >
+                  <Plus size={14} /> Playlist Baru
+                </button>
+                {mediaPlaylistGroups.find((g) => g.id === activeMediaPlaylistId) && (
+                  <span className="mp3-play-current">
+                    {mediaPlaylistGroups.find((g) => g.id === activeMediaPlaylistId)?.name}
+                    {' · '}
+                    {mp3Playlist.length} lagu
+                  </span>
+                )}
+              </div>
+
+              <form
+                className="songbook-search"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  lookupSongbook();
+                }}
+              >
+                <Search size={18} className="songbook-search-icon" />
+                <input
+                  type="search"
+                  value={songbookQuery}
+                  onChange={(e) => setSongbookQuery(e.target.value)}
+                  placeholder="Cari lagu, chord, atau lirik — contoh: Metallica Nothing Else Matters"
+                  aria-label="Cari chord dan lirik"
+                />
+                <button type="submit" className="process-btn" disabled={songbookBusy || !songbookQuery.trim()}>
+                  {songbookBusy ? <Loader2 size={16} className="spinner" /> : <Search size={16} />}
+                  {songbookBusy ? ' Mencari...' : ' Cari'}
+                </button>
+              </form>
+              {songbook && (
+                <div className="songbook-banner">
+                  <span>
+                    Hasil pencarian: <strong>{[songbook.artist, songbook.title].filter(Boolean).join(' — ') || songbook.query}</strong>
+                    {' · tanpa perlu file MP3'}
+                  </span>
+                  {mp3CurrentIndex >= 0 && (
+                    <button type="button" className="cancel-btn" onClick={() => setSongbook(null)}>
+                      Tampilkan lagu yang diputar
+                    </button>
+                  )}
+                  {mp3CurrentIndex < 0 && (
+                    <button type="button" className="cancel-btn" onClick={() => setSongbook(null)}>
+                      Tutup hasil
+                    </button>
+                  )}
+                </div>
+              )}
+
               {mp3FolderName && (
                 <p className="mp3-folder-label">
                   <FolderOpen size={14} /> {mp3FolderName} — {mp3Playlist.length} lagu
                 </p>
               )}
+              </>
+              )}
 
-              {mp3Playlist.length > 0 && (
-                <div className="mp3-playlist-layout">
+              <div className={`mp3-playlist-layout${mp3LibraryView === 'manage' ? ' mp3-view-parked' : ''}`}>
                   <div className="mp3-playlist-side">
                     <video
                       ref={mp3AudioRef}
@@ -7152,6 +8476,7 @@ function App() {
                         syncMp3PitchPlayerToMedia(false);
                       }}
                       onError={() => {
+                        if (mp3CurrentIndex < 0) return;
                         const mediaErr = mp3AudioRef.current?.error;
                         console.error('Media load error:', mediaErr);
                         setMp3IsPlaying(false);
@@ -7166,6 +8491,24 @@ function App() {
                       }}
                     />
 
+                    {mp3Playlist.length === 0 && (
+                      <div className="songbook-side-card">
+                        <Guitar size={28} />
+                        <h4>Cari chord &amp; lirik</h4>
+                        <p>
+                          Ketik penyanyi dan judul di kotak pencarian, seperti Ultimate Guitar.
+                          File MP3 tidak wajib — hasilnya teks chord/tabulatur dan lirik saja.
+                        </p>
+                        {songbook && (
+                          <p className="songbook-side-now">
+                            {[songbook.artist, songbook.title].filter(Boolean).join(' — ') || songbook.query}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {mp3Playlist.length > 0 && (
+                    <>
                     <div className="mp3-player-controls">
                       <button
                         type="button"
@@ -7222,6 +8565,42 @@ function App() {
                       <span className="mp3-time">{formatTime(mp3Duration)}</span>
                     </div>
 
+                    {mp3MusicalKey?.key && (
+                      <div className="mp3-key-row">
+                          <div
+                            className="stem-key-badge stem-key-badge--picker"
+                            title="Pilih nada dasar: lagu ikut pindah sesuai kunci yang dipilih"
+                          >
+                            <Music size={16} />
+                            <div className="stem-key-badge-text">
+                              <span>Nada Dasar</span>
+                              <label className="stem-key-select-wrap">
+                                <select
+                                  className="stem-key-select"
+                                  value={shiftMusicalKey(mp3MusicalKey.key, mp3Pitch)}
+                                  onChange={handleMp3NadaDasarChange}
+                                  aria-label="Pilih nada dasar lagu"
+                                >
+                                  {KEY_NOTE_NAMES.map((note) => (
+                                    <option key={note} value={note}>
+                                      {formatMusicalKey(note, mp3MusicalKey.scale)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <ChevronDown size={14} className="stem-key-select-caret" />
+                              </label>
+                              {mp3KeyLoading && <em>mendeteksi...</em>}
+                              {!mp3KeyLoading && mp3Pitch !== 0 && (
+                                <em>asli {formatMusicalKey(mp3MusicalKey.key, mp3MusicalKey.scale)}</em>
+                              )}
+                              {!mp3KeyLoading && mp3MusicalKey.assumed && mp3Pitch === 0 && (
+                                <em>perkiraan</em>
+                              )}
+                            </div>
+                          </div>
+                      </div>
+                    )}
+
                     <ul className="mp3-track-list">
                       {mp3Playlist.map((track, idx) => (
                         <li
@@ -7232,6 +8611,7 @@ function App() {
                           <span className="mp3-track-num">{idx + 1}</span>
                           <span className="mp3-track-name">{track.name}</span>
                           {track.lyrics && <FileText size={13} className="mp3-track-lyrics-icon" title="Ada lirik" />}
+                          {track.chords && <Guitar size={13} className="mp3-track-chords-icon" title="Ada chord" />}
                           {idx === mp3CurrentIndex && mp3IsPlaying && (
                             <Music size={14} className="mp3-track-playing-icon" />
                           )}
@@ -7246,11 +8626,36 @@ function App() {
                         </li>
                       ))}
                     </ul>
+                    </>
+                    )}
                   </div>
 
                   <div className="mp3-lyrics-panel glass-panel">
-                    <h4><FileText size={18} /> Lirik</h4>
-                    {mp3CurrentIndex >= 0 && (
+                    <div className="mp3-panel-view-tabs" role="tablist">
+                      <button
+                        type="button"
+                        role="tab"
+                        className={mp3PanelView === 'lyrics' ? 'active' : ''}
+                        aria-selected={mp3PanelView === 'lyrics'}
+                        onClick={() => setMp3PanelView('lyrics')}
+                      >
+                        <FileText size={16} /> Lirik
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        className={mp3PanelView === 'chords' ? 'active' : ''}
+                        aria-selected={mp3PanelView === 'chords'}
+                        onClick={() => {
+                          setMp3PanelView('chords');
+                          if (!songbook && mp3CurrentIndex >= 0) fetchChordsForTrack(mp3CurrentIndex);
+                        }}
+                      >
+                        <Guitar size={16} /> Chord
+                      </button>
+                    </div>
+                    <div hidden={mp3PanelView !== 'lyrics'} className="mp3-panel-view-body">
+                    {(songbook || mp3CurrentIndex >= 0) && (
                       <div className="mp3-lyrics-manual-toggle">
                         <button
                           type="button"
@@ -7262,7 +8667,7 @@ function App() {
                         </button>
                       </div>
                     )}
-                    {mp3LyricsManualOpen && mp3CurrentIndex >= 0 && (
+                    {mp3LyricsManualOpen && (songbook || mp3CurrentIndex >= 0) && (
                       <div className="mp3-lyrics-manual">
                         <p className="mp3-lyrics-manual-desc">
                           Lirik salah atau lagu orang lain? Cari penyanyi &amp; judul yang benar, lalu pilih dari daftar.
@@ -7324,16 +8729,41 @@ function App() {
                         )}
                       </div>
                     )}
-                    {mp3LyricsLoading && (
+                    {(songbook ? songbook.lyricsLoading : mp3LyricsLoading) && (
                       <div className="mp3-lyrics-loading">
                         <Loader2 size={24} className="spinner" />
-                        <p>{mp3LyricsStatus || 'Memuat lirik...'}</p>
+                        <p>{(songbook ? songbook.lyricsStatus : mp3LyricsStatus) || 'Memuat lirik...'}</p>
                       </div>
                     )}
-                    {!mp3LyricsLoading && mp3LyricsStatus && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics && (
+                    {songbook && !songbook.lyricsLoading && songbook.lyricsStatus && songbook.lyrics && (
+                      <p className="mp3-lyrics-status">{songbook.lyricsStatus}</p>
+                    )}
+                    {songbook && !songbook.lyricsLoading && songbook.lyrics?.type === 'lrc' && (
+                      <div className="mp3-lyrics-lines">
+                        {songbook.lyrics.lines.map((line, i) => (
+                          <p key={i} className="mp3-lyric-line mp3-lyric-line-upcoming">{line.text}</p>
+                        ))}
+                      </div>
+                    )}
+                    {songbook && !songbook.lyricsLoading && songbook.lyrics?.type === 'plain' && (
+                      <pre className="mp3-lyrics-plain">{songbook.lyrics.text}</pre>
+                    )}
+                    {songbook && !songbook.lyricsLoading && songbook.lyrics && (
+                      <div className="mp3-lyrics-actions">
+                        <button type="button" className="cancel-btn mp3-lyrics-download-btn" onClick={downloadSongbookLyrics}>
+                          <Download size={14} /> Unduh Lirik
+                        </button>
+                      </div>
+                    )}
+                    {songbook && !songbook.lyricsLoading && !songbook.lyrics && (
+                      <div className="mp3-lyrics-empty">
+                        <p>{songbook.lyricsStatus || 'Lirik tidak ditemukan.'}</p>
+                      </div>
+                    )}
+                    {!songbook && !mp3LyricsLoading && mp3LyricsStatus && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics && (
                       <p className="mp3-lyrics-status">{mp3LyricsStatus}</p>
                     )}
-                    {mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics?.type === 'lrc' && (() => {
+                    {!songbook && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics?.type === 'lrc' && (() => {
                       const currentTrack = mp3Playlist[mp3CurrentIndex];
                       const trackSync = getMp3TrackSync(currentTrack.id);
                       return (
@@ -7437,7 +8867,7 @@ function App() {
                       </>
                       );
                     })()}
-                    {mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics?.type === 'plain' && (
+                    {!songbook && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics?.type === 'plain' && (
                       <>
                         <p className="mp3-lyrics-plain-warn">Lirik tanpa timestamp — tidak bisa sinkron karaoke.</p>
                         <pre className="mp3-lyrics-plain">{mp3Playlist[mp3CurrentIndex].lyrics.text}</pre>
@@ -7451,7 +8881,7 @@ function App() {
                         </button>
                       </>
                     )}
-                    {mp3CurrentIndex >= 0 && (
+                    {!songbook && mp3CurrentIndex >= 0 && (
                       <div className="mp3-lyrics-audio-tools">
                         <div className="mp3-pitch-tools">
                           <span className="mp3-pitch-label">Tangga nada</span>
@@ -7525,7 +8955,7 @@ function App() {
                         {mp3SaveFeedback.revealPath && <FolderOpen size={16} className="mp3-save-feedback-folder-icon" />}
                       </div>
                     )}
-                    {mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics && (
+                    {!songbook && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.lyrics && (
                       <div className="mp3-lyrics-actions">
                         <button
                           className="cancel-btn mp3-lyrics-download-btn"
@@ -7607,7 +9037,7 @@ function App() {
                         </div>
                       );
                     })()}
-                    {mp3CurrentIndex >= 0 && !mp3Playlist[mp3CurrentIndex]?.lyrics && !mp3LyricsLoading && (
+                    {!songbook && mp3CurrentIndex >= 0 && !mp3Playlist[mp3CurrentIndex]?.lyrics && !mp3LyricsLoading && (
                       <div className="mp3-lyrics-empty">
                         {mp3Playlist[mp3CurrentIndex]?.lyricsNotFound ? (
                           <>
@@ -7625,20 +9055,238 @@ function App() {
                         )}
                       </div>
                     )}
-                    {mp3CurrentIndex === -1 && (
+                    {!songbook && mp3CurrentIndex === -1 && (
                       <div className="mp3-lyrics-empty">
-                        <p>Pilih lagu dari playlist untuk melihat lirik.</p>
+                        <p>Ketik lagu di kotak pencarian, atau pilih lagu dari playlist untuk melihat lirik.</p>
                       </div>
                     )}
+                    </div>
+                    <div hidden={mp3PanelView !== 'chords'} className="mp3-panel-view-body mp3-chords-body">
+                    {(songbook || mp3CurrentIndex >= 0) && (
+                      <div className="mp3-lyrics-manual-toggle">
+                        <button
+                          type="button"
+                          className={mp3ChordsManualOpen ? 'process-btn' : 'cancel-btn'}
+                          onClick={() => (mp3ChordsManualOpen ? setMp3ChordsManualOpen(false) : openManualChordsSearch())}
+                        >
+                          <Search size={14} />
+                          {mp3ChordsManualOpen ? ' Tutup pencarian' : ' Cari Chord Manual'}
+                        </button>
+                      </div>
+                    )}
+                    {mp3ChordsManualOpen && (songbook || mp3CurrentIndex >= 0) && (
+                      <div className="mp3-lyrics-manual">
+                        <p className="mp3-lyrics-manual-desc">
+                          Chord salah lagu? Cari penyanyi &amp; judul, lalu pilih versi chord atau tabulatur.
+                          Hanya teks yang ditampilkan — tanpa foto, diagram, atau iklan.
+                        </p>
+                        <div className="mp3-lyrics-manual-form">
+                          <input
+                            type="text"
+                            placeholder="Penyanyi (mis. Bon Jovi)"
+                            value={mp3ChordsSearchArtist}
+                            onChange={(e) => setMp3ChordsSearchArtist(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && searchManualChords()}
+                          />
+                          <input
+                            type="text"
+                            placeholder="Judul lagu (mis. Always)"
+                            value={mp3ChordsSearchTitle}
+                            onChange={(e) => setMp3ChordsSearchTitle(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && searchManualChords()}
+                          />
+                          <button
+                            type="button"
+                            className="process-btn"
+                            disabled={mp3ChordsSearchLoading}
+                            onClick={searchManualChords}
+                          >
+                            {mp3ChordsSearchLoading ? <Loader2 size={14} className="spinner" /> : <Search size={14} />}
+                            {mp3ChordsSearchLoading ? ' Mencari...' : ' Cari'}
+                          </button>
+                        </div>
+                        {mp3ChordsSearchResults.length > 0 && (
+                          <ul className="mp3-lyrics-search-results">
+                            {mp3ChordsSearchResults.map((item) => (
+                              <li key={item.id || item.url}>
+                                <button
+                                  type="button"
+                                  className="mp3-lyrics-search-item"
+                                  disabled={mp3ChordsSelectLoading === (item.id || item.url)}
+                                  onClick={() => selectManualChord(item)}
+                                >
+                                  <span className="mp3-lyrics-search-item-main">
+                                    {[item.artist_name, item.song_name].filter(Boolean).join(' — ') || item.song_name}
+                                  </span>
+                                  <span className="mp3-lyrics-search-item-meta">
+                                    {item.type && <span className="mp3-lyrics-badge sync">{item.type}</span>}
+                                    {item.source_name && <span className="mp3-lyrics-badge plain">{item.source_name}</span>}
+                                    {item.rating != null && (
+                                      <span className="mp3-lyrics-badge lines">★ {Number(item.rating).toFixed(1)}</span>
+                                    )}
+                                    {mp3ChordsSelectLoading === (item.id || item.url) && <Loader2 size={12} className="spinner" />}
+                                  </span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {mp3ChordsSearchDone && !mp3ChordsSearchLoading && mp3ChordsSearchResults.length === 0 && (
+                          <p className="mp3-lyrics-manual-hint">Tidak ada hasil. Coba penyanyi/judul lain.</p>
+                        )}
+                      </div>
+                    )}
+                    {(songbook ? songbook.chordsLoading : mp3ChordsLoading) && (
+                      <div className="mp3-lyrics-loading">
+                        <Loader2 size={22} className="spinner" />
+                        <p>{(songbook ? songbook.chordsStatus : mp3ChordsStatus) || 'Memuat chord...'}</p>
+                      </div>
+                    )}
+                    {songbook && !songbook.chordsLoading && songbook.chordsStatus && songbook.chords && (
+                      <p className="mp3-lyrics-status">{songbook.chordsStatus}</p>
+                    )}
+                    {!songbook && !mp3ChordsLoading && mp3ChordsStatus && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.chords && (
+                      <p className="mp3-lyrics-status">{mp3ChordsStatus}</p>
+                    )}
+                    {((songbook && songbook.chords?.content && !songbook.chordsLoading)
+                      || (!songbook && mp3CurrentIndex >= 0 && mp3Playlist[mp3CurrentIndex]?.chords?.content && !mp3ChordsLoading)) && (() => {
+                      const sheet = songbook?.chords || mp3Playlist[mp3CurrentIndex].chords;
+                      const chordShift = ((mp3ChordFollowPitch && !songbook) ? mp3Pitch : 0) + mp3ChordTranspose;
+                      return (
+                        <>
+                          <p className="mp3-chords-meta">
+                            {sheet.type || 'Chords'}
+                            {(sheet.artistName || sheet.songName) ? ` — ${[sheet.artistName, sheet.songName].filter(Boolean).join(' · ')}` : ''}
+                            {sheet.rating != null && Number(sheet.rating) > 0 ? ` · ★ ${Number(sheet.rating).toFixed(1)}` : ''}
+                            {sheet.sourceName ? ` · ${sheet.sourceName}` : ''}
+                            {' · teks chord/tab saja'}
+                          </p>
+                          <div className="ug-toolbar">
+                            <div className="ug-toolbar-group">
+                              Transpose
+                              <button
+                                type="button"
+                                className="ug-tool-btn"
+                                onClick={() => setMp3ChordTranspose((n) => Math.max(-12, n - 1))}
+                                disabled={chordShift <= -12}
+                                title="Turunkan 1 semitone"
+                              >
+                                <ChevronDown size={16} />
+                              </button>
+                              <strong>{chordShift > 0 ? `+${chordShift}` : chordShift}</strong>
+                              <button
+                                type="button"
+                                className="ug-tool-btn"
+                                onClick={() => setMp3ChordTranspose((n) => Math.min(12, n + 1))}
+                                disabled={chordShift >= 12}
+                                title="Naikkan 1 semitone"
+                              >
+                                <ChevronUp size={16} />
+                              </button>
+                            </div>
+                            <div className="ug-toolbar-group">
+                              Font
+                              <button
+                                type="button"
+                                className="ug-tool-btn"
+                                onClick={() => setMp3ChordFontPx((n) => Math.max(11, n - 1))}
+                                disabled={mp3ChordFontPx <= 11}
+                              >
+                                −
+                              </button>
+                              <strong>{mp3ChordFontPx}</strong>
+                              <button
+                                type="button"
+                                className="ug-tool-btn"
+                                onClick={() => setMp3ChordFontPx((n) => Math.min(22, n + 1))}
+                                disabled={mp3ChordFontPx >= 22}
+                              >
+                                +
+                              </button>
+                            </div>
+                            <label className="ug-follow-pitch">
+                              <input
+                                type="checkbox"
+                                checked={mp3ChordFollowPitch}
+                                onChange={(e) => setMp3ChordFollowPitch(e.target.checked)}
+                                disabled={!!songbook || mp3CurrentIndex < 0}
+                              />
+                              Ikuti tangga nada audio
+                            </label>
+                          </div>
+                          <div className="ug-sheet-scroll">
+                            <ChordSheet
+                              content={sheet.content}
+                              transpose={chordShift}
+                              fontPx={mp3ChordFontPx}
+                            />
+                          </div>
+                          <div className="mp3-lyrics-actions">
+                            <button
+                              type="button"
+                              className="cancel-btn mp3-lyrics-download-btn"
+                              onClick={downloadCurrentChords}
+                            >
+                              <Download size={14} /> Unduh Chord (.txt)
+                            </button>
+                            <button
+                              type="button"
+                              className="cancel-btn mp3-lyrics-refetch-btn"
+                              disabled={songbook ? songbookBusy : mp3ChordsLoading}
+                              onClick={() => (songbook ? lookupSongbook(songbook.query) : fetchChordsForTrack(mp3CurrentIndex, { refresh: true }))}
+                            >
+                              <RefreshCw size={14} /> Cari versi lain
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                    {songbook && !songbook.chordsLoading && !songbook.chords && (
+                      <div className="mp3-lyrics-empty">
+                        <p>{songbook.chordsStatus || 'Chord/tab tidak ditemukan.'}</p>
+                      </div>
+                    )}
+                    {!songbook && mp3CurrentIndex >= 0 && !mp3Playlist[mp3CurrentIndex]?.chords && !mp3ChordsLoading && (
+                      <div className="mp3-lyrics-empty">
+                        {mp3Playlist[mp3CurrentIndex]?.chordsNotFound ? (
+                          <>
+                            <p>Chord/tab tidak ditemukan di internet.</p>
+                            <button
+                              className="process-btn mp3-lyrics-retry-btn"
+                              onClick={() => fetchChordsForTrack(mp3CurrentIndex, { refresh: true })}
+                            >
+                              <RefreshCw size={16} /> Cari Lagi
+                            </button>
+                          </>
+                        ) : (
+                          <p>{mp3ChordsStatus || 'Mencari chord/tabulatur...'}</p>
+                        )}
+                      </div>
+                    )}
+                    {!songbook && mp3CurrentIndex === -1 && (
+                      <div className="mp3-lyrics-empty">
+                        <p>Ketik lagu di kotak pencarian, atau pilih lagu dari playlist untuk melihat chord.</p>
+                      </div>
+                    )}
+                    </div>
                   </div>
                 </div>
-              )}
 
 
             </div>
           </div>
         ) : activeTab === 'daw' ? (
-          <DawStudio token={token} apiBase={API_BASE_URL} onClose={() => setActiveTab('stems')} />
+          <DawStudio
+            token={token}
+            apiBase={API_BASE_URL}
+            onClose={() => setActiveTab('stems')}
+            suggestedKey={(stemMusicalKey || lastMusicalKey)?.key}
+            suggestedScale={(stemMusicalKey || lastMusicalKey)?.scale}
+            suggestedKeyLabel={formatMusicalKey(
+              (stemMusicalKey || lastMusicalKey)?.key,
+              (stemMusicalKey || lastMusicalKey)?.scale
+            )}
+          />
         ) : null}
 
         {showSearchModal && (
@@ -7691,7 +9339,7 @@ function App() {
                   <div className="search-result-container" style={{ textAlign: 'left' }}>
                     <div style={{ marginBottom: '15px', padding: '15px', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: '8px' }}>
                       <h4 style={{ color: '#2ec4b6', marginBottom: '10px' }}>Berhasil Ditemukan!</h4>
-                      <p><strong>Sumber:</strong> <a href={searchResult.source} target="_blank" rel="noreferrer" style={{ color: '#3a86ff' }}>Ultimate-Guitar</a></p>
+                      <p><strong>Sumber:</strong> <a href={searchResult.source} target="_blank" rel="noreferrer" style={{ color: '#3a86ff' }}>{searchResult.source_name || 'Chord/Tab'}</a></p>
                       <p><strong>Tipe:</strong> {searchResult.type}</p>
                       <p><strong>Rating:</strong> {searchResult.rating} / 5</p>
                     </div>

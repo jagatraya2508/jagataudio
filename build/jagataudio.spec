@@ -30,6 +30,7 @@ datas = []
 datas += collect_data_files('basic_pitch')
 datas += collect_data_files('demucs')
 datas += collect_data_files('torch')
+datas += collect_data_files('librosa')
 
 hidden_imports = [
     'uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto',
@@ -41,12 +42,13 @@ hidden_imports = [
     'passlib', 'passlib.handlers', 'passlib.handlers.bcrypt', 'bcrypt', 'jwt',
     'cryptography', 'multipart', 'python_multipart', 'sqlite3',
     'cloudscraper', 'bs4', 'requests',
-    'auth', 'database', 'tab_generator', 'license_manager', 'lyrics_fetcher', 'version',
+    'auth', 'database', 'tab_generator', 'tab_scraper', 'chord_fetcher', 'license_manager', 'lyrics_fetcher', 'version', 'key_detector',
     'pyarmor_runtime_000000',
     # ML Libraries
     'basic_pitch', 'basic_pitch.inference', 'basic_pitch.models',
     'mido', 'demucs', 'demucs.api', 'demucs.apply', 'demucs.pretrained', 'demucs.htdemucs',
     'torch', 'torchaudio', 'torchvision', 'soundfile',
+    'librosa', 'librosa.feature', 'librosa.beat', 'audioread', 'numba', 'sklearn',
     # YouTube DL dependencies
     'yt_dlp', 'yt_dlp.extractor', 'yt_dlp.extractor.youtube', 'yt_dlp.postprocessor', 'yt_dlp.postprocessor.ffmpeg',
     'mutagen', 'brotli', 'certifi', 'websockets', 'urllib3'
@@ -55,6 +57,7 @@ hidden_imports += collect_submodules('yt_dlp')
 hidden_imports += collect_submodules('basic_pitch')
 hidden_imports += collect_submodules('demucs')
 hidden_imports += collect_submodules('torchaudio')
+hidden_imports += collect_submodules('librosa')
 hidden_imports += collect_submodules('passlib')
 hidden_imports += collect_submodules('cryptography')
 
