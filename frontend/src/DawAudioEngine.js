@@ -14,6 +14,7 @@
  */
 
 import * as Tone from 'tone';
+import { createGuitarPluckInstrument } from './guitarInstrument';
 
 // ─── Track colour palette ────────────────────────────────────────────
 export const TRACK_COLORS = [
@@ -29,6 +30,13 @@ function dbToGain(db) {
 
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
+}
+
+function midiPlaybackVelocity(velocity) {
+  const base = Number.isFinite(Number(velocity)) ? Number(velocity) : 0.8;
+  // Chord generator previously split velocity across strings (~0.15–0.35).
+  const boosted = base < 0.5 ? 0.38 + base * 1.35 : base;
+  return clamp(boosted, 0.42, 1);
 }
 
 /** Encode an AudioBuffer as a 16-bit PCM WAV Blob. */
@@ -416,6 +424,7 @@ class DawAudioEngine {
 
     /* active players during playback: Map<regionId, Tone.Player> */
     this.activePlayers = new Map();
+    this.trackSynths = new Map();
 
     /* playback bookkeeping */
     this._playing         = false;
@@ -541,6 +550,7 @@ class DawAudioEngine {
       const chorus     = new Tone.Chorus({ frequency: 1.5, delayTime: 3.5, depth: 0.7, wet: 0 });
       try { chorus.start(); } catch (_) {}
       const inputGain  = new Tone.Gain(1);
+      const synth      = new Tone.PolySynth(Tone.Synth).connect(inputGain);
 
       // Gate di akhir prep — threshold -100 ≈ bypass (hampir semua sinyal lolos)
       // PitchShift ditempatkan setelah compressor, sebelum chorus (standar industri)
@@ -574,6 +584,7 @@ class DawAudioEngine {
         delay,
         channel,
         meter,
+        synth,
         soloMuted: false
       });
     } catch (err) {
@@ -584,9 +595,13 @@ class DawAudioEngine {
   removeTrackNode(trackId) {
     const n = this.trackNodes.get(trackId);
     if (!n) return;
+    if (n.midiParts) {
+      n.midiParts.forEach(part => { try { part.dispose(); } catch(e){} });
+    }
+    this._disposeMidiInstrument(n);
     [n.inputGain, n.noiseGate, n.lowCut, n.guitarDist, n.saturation, n.eq, n.compressor, n.pitchShift, n.chorus, n.reverb, n.delay, n.channel, n.meter].forEach(x => {
-      try { x.disconnect(); } catch (e) { /* ignore */ }
-      try { x.dispose(); } catch (e) { /* ignore */ }
+      try { x?.disconnect?.(); } catch (e) { /* ignore */ }
+      try { x?.dispose?.(); } catch (e) { /* ignore */ }
     });
     this.trackNodes.delete(trackId);
   }
@@ -601,6 +616,107 @@ class DawAudioEngine {
   setTrackPan(trackId, pan) {
     const n = this.trackNodes.get(trackId);
     if (n) n.channel.pan.value = clamp(pan, -1, 1);
+  }
+
+  _disposeMidiInstrument(node) {
+    if (!node) return;
+    if (node.synth) {
+      try { node.synth.releaseAll(); } catch (_) {}
+      try { node.synth.dispose(); } catch (_) {}
+      node.synth = null;
+    }
+    if (node.synthInserts) {
+      node.synthInserts.forEach((unit) => {
+        try { unit.dispose(); } catch (_) {}
+      });
+      node.synthInserts = [];
+    }
+  }
+
+  _connectMidiInstrument(node, synth, inserts = []) {
+    node.synth = synth;
+    node.synthInserts = inserts;
+    let head = synth;
+    for (const unit of inserts) {
+      head.connect(unit);
+      head = unit;
+    }
+    const dest = node.inputGain || node.channel;
+    head.connect(dest);
+  }
+
+  setupMidiInstrument(trackId, synthConfig) {
+    const node = this.trackNodes.get(trackId);
+    if (!node) return;
+
+    const configStr = JSON.stringify({ rev: 7, ...(synthConfig || {}) });
+    if (node._currentSynthConfig === configStr && node.synth) {
+      return;
+    }
+    node._currentSynthConfig = configStr;
+    this._disposeMidiInstrument(node);
+
+    const kind = synthConfig?.type || 'keys';
+    const tone = synthConfig?.tone || 'clean';
+
+    try {
+      if (kind === 'guitar') {
+        this._setupGuitarInstrument(node, tone);
+      } else if (kind === 'bass') {
+        this._setupBassInstrument(node, tone);
+      } else {
+        const synth = new Tone.PolySynth(Tone.Synth, {
+          oscillator: { type: 'triangle' },
+          envelope: { attack: 0.008, decay: 0.18, sustain: 0.45, release: 0.28 },
+        });
+        synth.maxPolyphony = 64;
+        synth.volume.value = -4;
+        const filter = new Tone.Filter(4500, 'lowpass');
+        const reverb = new Tone.Reverb({ decay: 1.4, wet: 0.12, preDelay: 0.01 });
+        reverb.generate().catch(() => {});
+        this._connectMidiInstrument(node, synth, [filter, reverb]);
+      }
+    } catch (e) {
+      console.error('Tone.js Synth creation failed:', e);
+      const fallback = new Tone.PolySynth(Tone.Synth);
+      fallback.maxPolyphony = 64;
+      fallback.volume.value = -4;
+      this._connectMidiInstrument(node, fallback);
+    }
+  }
+
+  _setupGuitarInstrument(node, tone) {
+    const synth = createGuitarPluckInstrument(tone);
+    this._connectMidiInstrument(node, synth, []);
+  }
+
+  _setupBassInstrument(node, tone) {
+    const voices = {
+      sawtooth: {
+        oscillator: { type: 'fatsawtooth', spread: 8, count: 2 },
+        envelope: { attack: 0.01, decay: 0.22, sustain: 0.55, release: 0.22 },
+        filter: { type: 'lowpass', Q: 1.4, rolloff: -24 },
+        filterEnvelope: { attack: 0.01, decay: 0.18, sustain: 0.25, release: 0.18, baseFrequency: 90, octaves: 2.4 },
+      },
+      sine: {
+        oscillator: { type: 'sine' },
+        envelope: { attack: 0.008, decay: 0.28, sustain: 0.6, release: 0.28 },
+        filter: { type: 'lowpass', Q: 0.7, rolloff: -12 },
+        filterEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.2, baseFrequency: 70, octaves: 1.8 },
+      },
+      square: {
+        oscillator: { type: 'fatsquare', spread: 10, count: 2 },
+        envelope: { attack: 0.01, decay: 0.18, sustain: 0.5, release: 0.2 },
+        filter: { type: 'lowpass', Q: 1.8, rolloff: -24 },
+        filterEnvelope: { attack: 0.008, decay: 0.14, sustain: 0.2, release: 0.16, baseFrequency: 110, octaves: 2.2 },
+      },
+    };
+    const synth = new Tone.PolySynth(Tone.MonoSynth, voices[tone] || voices.sawtooth);
+    synth.maxPolyphony = 8;
+    synth.volume.value = -4;
+    const filter = new Tone.Filter(420, 'lowpass');
+    const comp = new Tone.Compressor({ threshold: -18, ratio: 4, attack: 0.02, release: 0.16 });
+    this._connectMidiInstrument(node, synth, [filter, comp]);
   }
 
   setTrackMute(trackId, muted) {
@@ -807,6 +923,7 @@ class DawAudioEngine {
   }
 
   // ── Playback ────────────────────────────────────────────────────
+  // ── Playback ────────────────────────────────────────────────----
 
   getCurrentPosition() {
     if (!this._playing) return this._startProjTime;
@@ -836,7 +953,8 @@ class DawAudioEngine {
     this._skipTrackIds  = skipTrackIds ? new Set(skipTrackIds) : null;
     this._playOpts      = { loopEnabled, loopStart, loopEnd, bpm, skipTrackIds };
 
-    this._scheduleAllRegions(position, tracks, this._skipTrackIds);
+    const scheduleTime = Tone.now() + 0.05;
+    this._scheduleAllRegions(position, tracks, this._skipTrackIds, scheduleTime);
 
     if (this._metronomeOn) this._startMetronome(bpm, position);
 
@@ -847,6 +965,7 @@ class DawAudioEngine {
     this._playing = false;
     this._stopPlayheadLoop();
     this._stopAllPlayers();
+    this._stopRegionPreview();
     this._stopMetronome();
   }
 
@@ -860,7 +979,8 @@ class DawAudioEngine {
 
   // -- internal scheduling --
 
-  _scheduleAllRegions(fromPosition, tracks, skipTrackIds = null) {
+  _scheduleAllRegions(fromPosition, tracks, skipTrackIds, scheduleTime = null) {
+    if (!scheduleTime) scheduleTime = Tone.now();
     this._stopAllPlayers();
 
     for (const track of tracks) {
@@ -870,46 +990,86 @@ class DawAudioEngine {
       if (skipTrackIds && skipTrackIds.has(track.id)) continue;
 
       for (const region of (track.regions || [])) {
-        const audioData = this.audioBuffers.get(region.audioId);
-        if (!audioData) continue;
-
-        const regEnd = region.startTime + region.duration;
-        if (regEnd <= fromPosition) continue; // already passed
-
-        const toneBuffer = new Tone.ToneAudioBuffer(audioData.buffer);
-        const player = new Tone.Player(toneBuffer);
-        player.connect(node.inputGain);
-
-        if (region.gain) player.volume.value = region.gain;
-        if (typeof player.fadeIn === 'number' || 'fadeIn' in player) {
-          player.fadeIn = region.fadeIn || 0;
-        }
-        if (typeof player.fadeOut === 'number' || 'fadeOut' in player) {
-          player.fadeOut = region.fadeOut || 0;
-        }
-
-        if (region.startTime >= fromPosition) {
-          const delay = region.startTime - fromPosition;
-          try {
-            player.start(Tone.now() + delay, region.offset || 0, region.duration);
-          } catch (e) {
-            console.error('Player start failed:', region.name || region.id, e);
+        if (region.type === 'midi') {
+          const bakedAudio = region.audioId ? this.audioBuffers.get(region.audioId) : null;
+          if (bakedAudio) {
+            this._scheduleAudioRegion(node, region, fromPosition, scheduleTime);
+            continue;
           }
-        } else {
-          const elapsed = fromPosition - region.startTime;
-          const remaining = region.duration - elapsed;
-          if (remaining > 0) {
+
+          const regEnd = region.startTime + region.duration;
+          if (regEnd <= fromPosition) continue;
+          
+          if (!node.synth) continue;
+
+          for (const note of (region.notes || [])) {
+            if (note.muted) continue;
+            const absNoteStart = region.startTime + note.startTime;
+            const rawDur = Number(note.duration);
+            let dur = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : 0.2;
+            if (absNoteStart + dur <= fromPosition) continue;
+            const vel = midiPlaybackVelocity(note.velocity);
+
             try {
-              player.start(Tone.now(), (region.offset || 0) + elapsed, remaining);
-            } catch (e) {
-              console.error('Player start failed:', region.name || region.id, e);
-            }
+              if (absNoteStart >= fromPosition) {
+                const delay = absNoteStart - fromPosition;
+                node.synth.triggerAttackRelease(note.pitch, dur, scheduleTime + delay, vel);
+              } else {
+                const elapsed = fromPosition - absNoteStart;
+                const remaining = dur - elapsed;
+                if (remaining > 0) {
+                  node.synth.triggerAttackRelease(note.pitch, remaining, scheduleTime, vel);
+                }
+              }
+            } catch (err) {}
           }
+          continue;
         }
 
-        this.activePlayers.set(region.id, player);
+        this._scheduleAudioRegion(node, region, fromPosition, scheduleTime);
       }
     }
+  }
+
+  _scheduleAudioRegion(node, region, fromPosition, scheduleTime) {
+    const audioData = this.audioBuffers.get(region.audioId);
+    if (!audioData || !node) return;
+
+    const regEnd = region.startTime + region.duration;
+    if (regEnd <= fromPosition) return;
+
+    const toneBuffer = new Tone.ToneAudioBuffer(audioData.buffer);
+    const player = new Tone.Player(toneBuffer);
+    player.connect(node.inputGain);
+
+    if (region.gain) player.volume.value = region.gain;
+    if (typeof player.fadeIn === 'number' || 'fadeIn' in player) {
+      player.fadeIn = region.fadeIn || 0;
+    }
+    if (typeof player.fadeOut === 'number' || 'fadeOut' in player) {
+      player.fadeOut = region.fadeOut || 0;
+    }
+
+    if (region.startTime >= fromPosition) {
+      const delay = region.startTime - fromPosition;
+      try {
+        player.start(scheduleTime + delay, region.offset || 0, region.duration);
+      } catch (e) {
+        console.error('Player start failed:', region.name || region.id, e);
+      }
+    } else {
+      const elapsed = fromPosition - region.startTime;
+      const remaining = region.duration - elapsed;
+      if (remaining > 0) {
+        try {
+          player.start(Tone.now(), (region.offset || 0) + elapsed, remaining);
+        } catch (e) {
+          console.error('Player start failed:', region.name || region.id, e);
+        }
+      }
+    }
+
+    this.activePlayers.set(region.id, player);
   }
 
   _stopAllPlayers() {
@@ -918,6 +1078,166 @@ class DawAudioEngine {
       try { p.dispose(); } catch (_) { /* ignore */ }
     }
     this.activePlayers.clear();
+
+    for (const node of this.trackNodes.values()) {
+      if (node.players) {
+        node.players.forEach(p => {
+          try { p.stop(); p.dispose(); } catch (e) { /* ignore */ }
+        });
+        node.players = [];
+      }
+      if (node.midiParts) {
+        node.midiParts.forEach(part => { try { part.dispose(); } catch(e){} });
+        node.midiParts = [];
+      }
+      if (node.synth) {
+        try { node.synth.releaseAll(); } catch (_) {}
+      }
+    }
+  }
+
+  previewNote(pitch, trackId = null) {
+    this._ensurePlaybackToSpeakers();
+    const freq = this._pitchToFreq(pitch);
+    const ctx = this._rawCtx();
+    if (ctx && ctx.state === 'running') {
+      this._nativeBeep(ctx, freq, ctx.currentTime, 0.18, 0.22);
+    }
+    try {
+      const dest = this.outputTap || Tone.getDestination();
+      if (!this._previewSynth) {
+        this._previewSynth = new Tone.PolySynth(Tone.Synth, {
+          oscillator: { type: 'triangle' },
+          envelope: { attack: 0.005, decay: 0.18, sustain: 0.2, release: 0.12 },
+        });
+        this._previewSynth.maxPolyphony = 16;
+        this._previewSynth.volume.value = -2;
+        this._previewSynth.connect(dest);
+      }
+      this._previewSynth.triggerAttackRelease(pitch, '8n', Tone.now(), 0.9);
+    } catch (_) {
+      const node = trackId ? this.trackNodes.get(trackId) : null;
+      try { node?.synth?.triggerAttackRelease(pitch, '8n', Tone.now(), 0.9); } catch (e) { /* ignore */ }
+    }
+  }
+
+  _rawCtx() {
+    return Tone.getContext()?.rawContext
+      || Tone.getContext()?._nativeAudioContext
+      || getNativeAudioContext();
+  }
+
+  _pitchToFreq(pitch) {
+    try {
+      const f = Tone.Frequency(pitch).toFrequency();
+      return Number.isFinite(f) && f > 0 ? f : 261.63;
+    } catch (_) {
+      return 261.63;
+    }
+  }
+
+  _nativeBeep(ctx, freq, when, dur, gainVal) {
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, when);
+      const peak = Math.max(0.04, Math.min(0.28, gainVal));
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.exponentialRampToValueAtTime(peak, when + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + Math.max(0.05, dur));
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(when);
+      osc.stop(when + Math.max(0.06, dur) + 0.04);
+      this._nativePreviewNodes = this._nativePreviewNodes || [];
+      this._nativePreviewNodes.push({ osc, gain });
+    } catch (_) { /* ignore */ }
+  }
+
+  async previewRegionNotes(notes, { regionStart = 0, audioId = null } = {}) {
+    await this.init();
+    await this._ensureAudioRunning();
+    this._ensurePlaybackToSpeakers();
+
+    this._stopPlayheadLoop();
+    this._stopAllPlayers();
+    this._stopRegionPreview();
+    this._stopMetronome();
+
+    const dest = this.outputTap || this.masterGain || Tone.getDestination();
+    const ctx = this._rawCtx();
+    const list = Array.isArray(notes) ? notes.filter(n => n && !n.muted && n.pitch) : [];
+
+    const baked = audioId ? this.audioBuffers.get(audioId) : null;
+    let usedBaked = false;
+    if (baked?.buffer) {
+      try {
+        const player = new Tone.Player(new Tone.ToneAudioBuffer(baked.buffer));
+        player.connect(dest);
+        player.volume.value = -1;
+        player.start(Tone.now() + 0.02);
+        this._regionPreviewPlayer = player;
+        usedBaked = true;
+      } catch (_) { /* fall through to notes */ }
+    }
+
+    if (!usedBaked && list.length) {
+      try {
+        const synth = new Tone.PolySynth(Tone.Synth, {
+          oscillator: { type: 'triangle' },
+          envelope: { attack: 0.005, decay: 0.22, sustain: 0.28, release: 0.14 },
+        });
+        synth.maxPolyphony = 48;
+        synth.volume.value = -1;
+        synth.connect(dest);
+        this._regionPreviewSynth = synth;
+        const t0 = Tone.now() + 0.03;
+        for (const note of list) {
+          const start = Math.max(0, Number(note.startTime) || 0);
+          const dur = Math.max(0.08, Number(note.duration) || 0.22);
+          const vel = Math.min(1, Math.max(0.55, Number(note.velocity) || 0.85));
+          try { synth.triggerAttackRelease(note.pitch, dur, t0 + start, vel); } catch (_) {}
+        }
+      } catch (_) { /* ignore */ }
+
+      if (ctx) {
+        const base = (ctx.currentTime || 0) + 0.03;
+        for (const note of list) {
+          const start = Math.max(0, Number(note.startTime) || 0);
+          const dur = Math.max(0.08, Number(note.duration) || 0.22);
+          const vel = Math.min(1, Math.max(0.55, Number(note.velocity) || 0.85));
+          this._nativeBeep(ctx, this._pitchToFreq(note.pitch), base + start, dur, 0.16 * vel);
+        }
+      }
+    }
+
+    this._playing = true;
+    this._loopEnabled = false;
+    this._startProjTime = regionStart;
+    this._startCtxTime = Tone.now();
+    this._startPlayheadLoop([], 120);
+  }
+
+  _stopRegionPreview() {
+    if (this._regionPreviewSynth) {
+      try { this._regionPreviewSynth.releaseAll(); } catch (_) {}
+      try { this._regionPreviewSynth.dispose(); } catch (_) {}
+      this._regionPreviewSynth = null;
+    }
+    if (this._regionPreviewPlayer) {
+      try { this._regionPreviewPlayer.stop(); } catch (_) {}
+      try { this._regionPreviewPlayer.dispose(); } catch (_) {}
+      this._regionPreviewPlayer = null;
+    }
+    if (this._nativePreviewNodes?.length) {
+      for (const n of this._nativePreviewNodes) {
+        try { n.osc.stop(); } catch (_) {}
+        try { n.osc.disconnect(); } catch (_) {}
+        try { n.gain.disconnect(); } catch (_) {}
+      }
+      this._nativePreviewNodes = [];
+    }
   }
 
   setRegionGainRealtime(regionId, gainDb) {

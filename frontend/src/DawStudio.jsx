@@ -20,9 +20,12 @@ import {
   Gauge, Zap, Check, RotateCcw, VolumeX, Flame, Headphones, RefreshCw,
 } from 'lucide-react';
 import { generateDrumLoop, DRUM_PRESETS } from './DrumGenerator';
-import { generateBassLoop } from './BassGenerator';
+import { generateBassLoop, BASS_PATTERNS, BASS_SYNTH_TYPES } from './BassGenerator';
+import { generateGuitarLoop, renderGuitarNotesToFile, GUITAR_PATTERNS, GUITAR_TONES } from './GuitarGenerator';
+import { generateBackingVocal, VOCAL_STYLES, VOCAL_HARMONIES } from './BackingVocalGenerator';
 import { TRACK_MIXING_PRESETS, MASTERING_PRESETS } from './mixingPresets';
 import './daw.css';
+import PianoRoll from './PianoRoll';
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -108,10 +111,11 @@ function isCommunicationsInput(deviceOrLabel) {
   return /communications/i.test(label);
 }
 
-function createDefaultTrack(index) {
+function createDefaultTrack(index, type = 'audio') {
   return {
     id: uid('track'),
-    name: `Track ${index + 1}`,
+    name: type === 'midi' ? `Inst ${index + 1}` : `Track ${index + 1}`,
+    type,
     color: TRACK_COLORS[index % TRACK_COLORS.length],
     volume: 0,
     pan: 0,
@@ -139,7 +143,9 @@ function createDefaultTrack(index) {
 function createRegion(audioId, startTime, duration, name, offset = 0, extra = {}) {
   return {
     id: uid('region'),
+    type: audioId ? 'audio' : 'midi',
     audioId,
+    notes: audioId ? undefined : [],
     name,
     startTime,
     duration,
@@ -340,11 +346,30 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
 
   // Bass Generator State
   const [showBassModal, setShowBassModal] = useState(false);
+  const [pianoRollRegion, setPianoRollRegion] = useState(null);
+  const [pianoRollTrackId, setPianoRollTrackId] = useState(null);
   const [bassKey, setBassKey] = useState('C');
   const [bassScale, setBassScale] = useState('minor');
   const [bassPattern, setBassPattern] = useState('offbeat');
+  const [bassSynthType, setBassSynthType] = useState('sawtooth');
   const [isGeneratingBass, setIsGeneratingBass] = useState(false);
   const [stemSuggestedKey, setStemSuggestedKey] = useState(null);
+
+  // Guitar Generator State
+  const [showGuitarModal, setShowGuitarModal] = useState(false);
+  const [guitarKey, setGuitarKey] = useState('C');
+  const [guitarScale, setGuitarScale] = useState('minor');
+  const [guitarPattern, setGuitarPattern] = useState('strumming');
+  const [guitarTone, setGuitarTone] = useState('acoustic');
+  const [isGeneratingGuitar, setIsGeneratingGuitar] = useState(false);
+
+  // Backing Vocal Generator State
+  const [showVocalModal, setShowVocalModal] = useState(false);
+  const [vocalKey, setVocalKey] = useState('C');
+  const [vocalScale, setVocalScale] = useState('minor');
+  const [vocalStyle, setVocalStyle] = useState('choir_pad');
+  const [vocalHarmony, setVocalHarmony] = useState('thirds');
+  const [isGeneratingVocal, setIsGeneratingVocal] = useState(false);
 
   // Refs
   const engineRef        = useRef(null);
@@ -358,7 +383,7 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
   const tracksRef        = useRef(tracks);
   tracksRef.current      = tracks;
   const cursorRef        = useRef(cursorPos);
-  cursorRef.current      = cursorPos;
+  if (!isPlaying) cursorRef.current = cursorPos;
   const isRecordingRef   = useRef(isRecording);
   isRecordingRef.current = isRecording;
   const recordStartRef   = useRef(0);
@@ -394,6 +419,10 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
     const engine = new DawAudioEngine();
     engineRef.current = engine;
     engine.onPlayheadUpdate = (pos) => {
+      cursorRef.current = pos;
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (now - (engine._lastPlayheadUi || 0) < 48) return;
+      engine._lastPlayheadUi = now;
       setCursorPos(pos);
     };
     return () => { engine.dispose(); };
@@ -411,6 +440,9 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
           engine.setTrackPan(t.id, t.pan);
           engine.setTrackMute(t.id, t.mute);
           engine.setTrackEffects(t.id, t.effects);
+          if (t.type === 'midi' && t.synthConfig) {
+            engine.setupMidiInstrument(t.id, t.synthConfig);
+          }
         }
       }
       engine.updateSoloState(tracks);
@@ -515,9 +547,9 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
 
   // ============ TRACK MANAGEMENT ============
 
-  const addTrack = useCallback(() => {
+  const addTrack = useCallback((type = 'audio') => {
     setTracks(prev => {
-      const t = [...prev, createDefaultTrack(prev.length)];
+      const t = [...prev, createDefaultTrack(prev.length, type)];
       pushUndo(t);
       return t;
     });
@@ -709,10 +741,13 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
 
   // ============ TRANSPORT ============
 
-  const handlePlay = useCallback(async () => {
+  const handlePlay = useCallback(async (startPos = null) => {
     const engine = engineRef.current;
     if (!engine) return;
     await engine.init();
+    try {
+      await Tone.start();
+    } catch (_) { /* ignore */ }
     // Ensure track nodes exist (they may have failed to create before init)
     const currentTracks = tracksRef.current;
     for (const t of currentTracks) {
@@ -722,14 +757,20 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
         engine.setTrackPan(t.id, t.pan);
         engine.setTrackMute(t.id, t.mute);
         engine.setTrackEffects(t.id, t.effects);
+        if (t.type === 'midi' && t.synthConfig) {
+          engine.setupMidiInstrument(t.id, t.synthConfig);
+        }
       }
     }
     engine.updateSoloState(currentTracks);
-    if (isPlaying) {
+    const explicitStart = typeof startPos === 'number' && Number.isFinite(startPos);
+    if (isPlaying && !explicitStart) {
       engine.stop();
       setIsPlaying(false);
     } else {
-      engine.play(cursorRef.current, currentTracks, {
+      const pos = explicitStart ? startPos : cursorRef.current;
+
+      engine.play(pos, currentTracks, {
         loopEnabled, loopStart, loopEnd, bpm,
       });
       setIsPlaying(true);
@@ -763,6 +804,9 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
         engine.setTrackPan(t.id, t.pan);
         engine.setTrackMute(t.id, t.mute);
         engine.setTrackEffects(t.id, t.effects);
+        if (t.type === 'midi' && t.synthConfig) {
+          engine.setupMidiInstrument(t.id, t.synthConfig);
+        }
       }
     }
     engine.updateSoloState(currentTracks);
@@ -1063,25 +1107,150 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
     }
   }, [bpm, drumKit, drumFill, drumGrid, drumSwing, isPreviewing, showToast]);
 
+  const importMidiRegion = useCallback((notes, duration, name, synthConfig, targetTrackId, dropTime = 0, extra = {}) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.init();
+
+    const region = createRegion(null, dropTime, duration, name);
+    region.notes = notes;
+    if (extra.audioId) region.audioId = extra.audioId;
+
+    setTracks(prev => {
+      const requested = targetTrackId ? prev.find(t => t.id === targetTrackId) : null;
+      const canReuse = requested && requested.type === 'midi';
+
+      if (canReuse) {
+        const t = prev.map(trk => {
+          if (trk.id !== requested.id) return trk;
+          return {
+            ...trk,
+            synthConfig: synthConfig || trk.synthConfig,
+            regions: [...(trk.regions || []), region],
+          };
+        });
+        pushUndo(t);
+        return t;
+      }
+
+      const newTrack = createDefaultTrack(prev.length, 'midi');
+      newTrack.synthConfig = synthConfig;
+      newTrack.volume = 0;
+      newTrack.regions = [region];
+      const t = [...prev, newTrack];
+      pushUndo(t);
+      return t;
+    });
+  }, [pushUndo]);
+
   const handleGenerateBass = useCallback(async () => {
     setIsGeneratingBass(true);
     try {
-      const file = await generateBassLoop({
+      const notes = await generateBassLoop({
         bpm,
         bars: drumBars, // Reusing drumBars for simplicity
         key: bassKey,
         scale: bassScale,
-        pattern: bassPattern
+        pattern: bassPattern,
+        synthType: bassSynthType,
+        output: 'midi'
       });
-      await importAudioFiles([file], null, cursorRef.current);
+      
+      const durationSec = (60 / bpm) * 4 * drumBars;
+      const synthConfig = { type: 'bass', tone: bassSynthType };
+      
+      importMidiRegion(
+        notes, 
+        durationSec, 
+        `Bass ${bassPattern} (${bassKey} ${bassScale})`, 
+        synthConfig, 
+        null, 
+        cursorRef.current
+      );
+      
       setShowBassModal(false);
-      showToast('Bass berhasil digenerate!', 'success');
+      showToast('Bass MIDI berhasil digenerate!', 'success');
     } catch (err) {
       console.error(err);
       showToast('Gagal generate bass: ' + (err.message || err), 'error');
     }
     setIsGeneratingBass(false);
-  }, [bpm, drumBars, bassKey, bassScale, bassPattern, importAudioFiles, showToast]);
+  }, [bpm, drumBars, bassKey, bassScale, bassPattern, bassSynthType, importMidiRegion, showToast]);
+
+  const handleGenerateGuitar = useCallback(async () => {
+    setIsGeneratingGuitar(true);
+    try {
+      const notes = await generateGuitarLoop({
+        bpm,
+        bars: drumBars,
+        key: guitarKey,
+        scale: guitarScale,
+        pattern: guitarPattern,
+        tone: guitarTone,
+        output: 'midi'
+      });
+      
+      const durationSec = (60 / bpm) * 4 * drumBars;
+      const synthConfig = { type: 'guitar', tone: guitarTone };
+      const name = `Guitar ${guitarPattern} (${guitarKey} ${guitarScale})`;
+      const wavFile = await renderGuitarNotesToFile(
+        notes,
+        durationSec,
+        guitarTone,
+        guitarKey,
+        guitarScale,
+        guitarPattern,
+        bpm
+      );
+      const engine = engineRef.current;
+      if (engine) await engine.init();
+      const audio = engine ? await engine.loadAudioFile(wavFile) : null;
+      if (audio) {
+        setAudioLib(prev => ({
+          ...prev,
+          [audio.audioId]: { name: audio.name, duration: audio.duration, peaks: audio.peaks },
+        }));
+      }
+
+      importMidiRegion(
+        notes,
+        durationSec,
+        name,
+        synthConfig,
+        null,
+        cursorRef.current,
+        audio ? { audioId: audio.audioId } : {}
+      );
+      
+      setShowGuitarModal(false);
+      showToast('Guitar berhasil digenerate!', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal generate guitar: ' + (err.message || err), 'error');
+    }
+    setIsGeneratingGuitar(false);
+  }, [bpm, drumBars, guitarKey, guitarScale, guitarPattern, guitarTone, importMidiRegion, showToast]);
+
+  const handleGenerateVocal = useCallback(async () => {
+    setIsGeneratingVocal(true);
+    try {
+      const file = await generateBackingVocal({
+        bpm,
+        bars: drumBars,
+        key: vocalKey,
+        scale: vocalScale,
+        style: vocalStyle,
+        harmony: vocalHarmony
+      });
+      await importAudioFiles([file], null, cursorRef.current);
+      setShowVocalModal(false);
+      showToast('Backing Vocal berhasil digenerate!', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Gagal generate vocal: ' + (err.message || err), 'error');
+    }
+    setIsGeneratingVocal(false);
+  }, [bpm, drumBars, vocalKey, vocalScale, vocalStyle, vocalHarmony, importAudioFiles, showToast]);
 
   // ============ PROJECT SAVE / LOAD ============
 
@@ -1885,6 +2054,26 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
     }
   }, []);
 
+  const handleCanvasDoubleClick = useCallback((e) => {
+    const hit = findRegionAt(e.clientX, e.clientY);
+    if (hit && hit.region.type === 'midi') {
+      setPianoRollRegion(hit.region);
+      setPianoRollTrackId(hit.trackId);
+    } else if (!hit) {
+      const trackIdx = getTrackIndexFromY(e.clientY);
+      if (trackIdx >= 0 && trackIdx < tracksRef.current.length) {
+        const track = tracksRef.current[trackIdx];
+        if (track.type === 'midi') {
+          const time = getTimeFromX(e.clientX);
+          const snapped = snapEnabled ? snapTime(time, bpm, timeSignature, snapValue) : time;
+          const newRegion = createRegion(null, snapped, 60/bpm * 4, 'MIDI Region');
+          setTracks(prev => prev.map(t => t.id === track.id ? { ...t, regions: [...t.regions, newRegion] } : t));
+          pushUndo(tracksRef.current);
+        }
+      }
+    }
+  }, [findRegionAt, getTrackIndexFromY, getTimeFromX, snapEnabled, snapValue, bpm, timeSignature, pushUndo]);
+
   const handleCanvasContextMenu = useCallback((e) => {
     e.preventDefault();
     const hit = findRegionAt(e.clientX, e.clientY);
@@ -2079,7 +2268,7 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
       <div className="daw-studio">
         <div className="daw-home">
           <div className="daw-home-hero">
-            <h2>🎹 DAW Studio</h2>
+            <h2>🎹 DAW & Sequencer</h2>
             <p>Multi-track recording, arrangement, mixing & mastering — terinspirasi dari Studio One. Drag & drop audio, edit region, tambah efek, dan export mix Anda.</p>
           </div>
           <div className="daw-home-actions">
@@ -2193,6 +2382,12 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
           </button>
           <button className={`daw-transport-btn`} onClick={() => setShowBassModal(true)} title="Generate Bassline" style={{ fontWeight: 800, fontSize: '0.8rem' }}>
             ~
+          </button>
+          <button className={`daw-transport-btn`} onClick={() => setShowGuitarModal(true)} title="Generate Guitar">
+            🎸
+          </button>
+          <button className={`daw-transport-btn`} onClick={() => setShowVocalModal(true)} title="Generate Backing Vocal Pad">
+            🎤
           </button>
         </div>
 
@@ -2555,9 +2750,14 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
               )}
             </div>
           ))}
-          <button className="daw-add-track-btn" onClick={addTrack}>
-            <Plus size={16} /> Tambah Track
-          </button>
+          <div className="daw-add-track-wrapper" style={{ padding: '10px' }}>
+            <button className="daw-add-track-btn" onClick={() => addTrack('audio')} style={{ marginBottom: '6px' }}>
+              <Plus size={16} /> Tambah Audio Track
+            </button>
+            <button className="daw-add-track-btn" onClick={() => addTrack('midi')}>
+              <Plus size={16} /> Tambah Instrumen (MIDI)
+            </button>
+          </div>
         </div>
 
         {/* Resizer */}
@@ -2579,6 +2779,7 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
             onMouseUp={handleCanvasMouseUp}
             onWheel={handleCanvasWheel}
             onContextMenu={handleCanvasContextMenu}
+            onDoubleClick={handleCanvasDoubleClick}
           />
           {isDragOver && (
             <div className="daw-timeline-drop-overlay">
@@ -3884,6 +4085,32 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
         </div>
       )}
 
+      {pianoRollRegion && (
+        <PianoRoll
+          bpm={bpm}
+          region={pianoRollRegion}
+          trackId={pianoRollTrackId}
+          engineRef={engineRef}
+          onPlay={() => setIsPlaying(true)}
+          onStop={handleStop}
+          isPlaying={isPlaying}
+          onClose={() => {
+            setPianoRollRegion(null);
+            setPianoRollTrackId(null);
+          }}
+          onChange={(updatedRegion) => {
+            const next = { ...updatedRegion };
+            delete next.audioId;
+            setPianoRollRegion(next);
+            setTracks(prev => prev.map(t => {
+              if (t.id !== pianoRollTrackId) return t;
+              return { ...t, regions: t.regions.map(r => r.id === updatedRegion.id ? next : r) };
+            }));
+            pushUndo(tracksRef.current);
+          }}
+        />
+      )}
+
       {/* ── Bass Generator Modal ── */}
       {showBassModal && (
         <div className="daw-overlay">
@@ -3904,6 +4131,9 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
                 <select className="daw-select" value={bassScale} onChange={e => setBassScale(e.target.value)}>
                   <option value="minor">Minor</option>
                   <option value="major">Major</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="major_pentatonic">Major Pentatonic</option>
+                  <option value="blues">Blues</option>
                 </select>
               </div>
             </div>
@@ -3912,9 +4142,17 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
               <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
                 <label>Pola (Pattern)</label>
                 <select className="daw-select" value={bassPattern} onChange={e => setBassPattern(e.target.value)}>
-                  <option value="offbeat">Offbeat (House/Techno)</option>
-                  <option value="rolling">Rolling (Trance/Psy)</option>
-                  <option value="groove">Funky Groove</option>
+                  {Object.entries(BASS_PATTERNS).map(([key, val]) => (
+                    <option key={key} value={key}>{val.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Tipe Synth (Tone)</label>
+                <select className="daw-select" value={bassSynthType} onChange={e => setBassSynthType(e.target.value)}>
+                  {Object.entries(BASS_SYNTH_TYPES).map(([key, val]) => (
+                    <option key={key} value={key}>{val.name}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -3934,6 +4172,135 @@ function DawStudio({ token, apiBase = '', onClose, suggestedKey, suggestedScale,
                 disabled={isGeneratingBass}
               >
                 {isGeneratingBass ? 'Generating...' : 'Generate & Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Guitar Generator Modal ── */}
+      {showGuitarModal && (
+        <div className="daw-overlay">
+          <div className="daw-modal" style={{ maxWidth: 500 }}>
+            <h2>Generate Guitar Loop</h2>
+            
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Nada Dasar (Key)</label>
+                <select className="daw-select" value={guitarKey} onChange={e => setGuitarKey(e.target.value)}>
+                  {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(k => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Skala (Scale)</label>
+                <select className="daw-select" value={guitarScale} onChange={e => setGuitarScale(e.target.value)}>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="major_pentatonic">Major Pentatonic</option>
+                  <option value="blues">Blues</option>
+                  <option value="dorian">Dorian</option>
+                  <option value="mixolydian">Mixolydian</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Pola (Pattern)</label>
+                <select className="daw-select" value={guitarPattern} onChange={e => setGuitarPattern(e.target.value)}>
+                  {Object.entries(GUITAR_PATTERNS).map(([key, val]) => (
+                    <option key={key} value={key} title={val.desc}>{val.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Tone / FX</label>
+                <select className="daw-select" value={guitarTone} onChange={e => setGuitarTone(e.target.value)}>
+                  {Object.entries(GUITAR_TONES).map(([key, val]) => (
+                    <option key={key} value={key} title={val.desc}>{val.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            
+            <p style={{ fontSize: '0.8rem', color: 'var(--daw-text-dim)', marginBottom: 0, marginTop: 12, lineHeight: 1.5 }}>
+              Gitar akan dirender dalam {drumBars} Bars mengikuti tempo <strong>{bpm} BPM</strong>.
+            </p>
+
+            <div className="daw-modal-actions">
+              <button className="daw-modal-cancel" onClick={() => setShowGuitarModal(false)}>Batal</button>
+              <button 
+                className="daw-modal-confirm" 
+                onClick={handleGenerateGuitar}
+                disabled={isGeneratingGuitar}
+              >
+                {isGeneratingGuitar ? 'Generating...' : 'Generate & Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Backing Vocal Generator Modal ── */}
+      {showVocalModal && (
+        <div className="daw-overlay">
+          <div className="daw-modal" style={{ maxWidth: 500 }}>
+            <h2>Generate Backing Vocal Pad</h2>
+            
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Nada Dasar (Key)</label>
+                <select className="daw-select" value={vocalKey} onChange={e => setVocalKey(e.target.value)}>
+                  {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].map(k => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Skala (Scale)</label>
+                <select className="daw-select" value={vocalScale} onChange={e => setVocalScale(e.target.value)}>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="minor_pentatonic">Minor Pentatonic</option>
+                  <option value="major_pentatonic">Major Pentatonic</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Gaya Vokal (Style)</label>
+                <select className="daw-select" value={vocalStyle} onChange={e => setVocalStyle(e.target.value)}>
+                  {Object.entries(VOCAL_STYLES).map(([key, val]) => (
+                    <option key={key} value={key} title={val.desc}>{val.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="daw-modal-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Harmoni (Harmony)</label>
+                <select className="daw-select" value={vocalHarmony} onChange={e => setVocalHarmony(e.target.value)}>
+                  {Object.entries(VOCAL_HARMONIES).map(([key, val]) => (
+                    <option key={key} value={key}>{val.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            
+            <p style={{ fontSize: '0.8rem', color: 'var(--daw-text-dim)', marginBottom: 0, marginTop: 12, lineHeight: 1.5 }}>
+              Backing vocal pad (Choir Synthesis) akan dirender dalam {drumBars} Bars mengikuti tempo <strong>{bpm} BPM</strong>.
+            </p>
+
+            <div className="daw-modal-actions">
+              <button className="daw-modal-cancel" onClick={() => setShowVocalModal(false)}>Batal</button>
+              <button 
+                className="daw-modal-confirm" 
+                onClick={handleGenerateVocal}
+                disabled={isGeneratingVocal}
+              >
+                {isGeneratingVocal ? 'Generating...' : 'Generate & Import'}
               </button>
             </div>
           </div>
@@ -4025,9 +4392,9 @@ class DawErrorBoundary extends React.Component {
           gap: '16px', padding: '40px',
         }}>
           <div style={{ fontSize: '2rem' }}>⚠️</div>
-          <h2 style={{ margin: 0, color: '#ff477e' }}>DAW Studio Error</h2>
+          <h2 style={{ margin: 0, color: '#ff477e' }}>DAW & Sequencer Error</h2>
           <p style={{ color: '#94a3b8', maxWidth: '500px', textAlign: 'center' }}>
-            Terjadi kesalahan pada DAW Studio. Klik tombol di bawah untuk memulai ulang.
+            Terjadi kesalahan pada DAW & Sequencer. Klik tombol di bawah untuk memulai ulang.
           </p>
           <pre style={{
             background: '#171a2e', padding: '12px 16px', borderRadius: '8px', fontSize: '0.75rem',

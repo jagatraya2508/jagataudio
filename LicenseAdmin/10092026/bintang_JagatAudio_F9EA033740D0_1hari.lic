@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "F9EA-0337-40D0-CA4B-C800-9E81-7435-68A0",
+    "license_type": "1hari",
+    "customer_name": "bintang",
+    "issued_date": "2026-09-07T15:32:29.650644",
+    "expiry_date": "2026-09-08T15:32:29.650644",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "D4tiflQb+RhTbvkV+UBwekYrRtWFb9aqIiW/9e1cqw8JW+Pj1CZ5Rdf8r5zZ3kFGN5wXzUa2gCrR92wKBDIJe0NP0rTs61jm407Kkm6hZUHKgR29HREctXU4UMHgC0epnM2//eSfPTlxJyoVCYra3lz8CUjJrV7ClC1Pl/4mzsepsaCsXbP03HAf4Jkwzh1+7WBSsvuUkR3I83P5EGdXGefwk2U9TB0UpEHTAqDjTUSexDiD9IESrrsDxCj8LWomWOn8yJ41mafGDOoGwCigSADcURyijGpaIcKT8FOKmHgx4vin7ayiqYS8XqnKNvA4N+5IHNj85cmZhnAnpGh4Gw=="
+}

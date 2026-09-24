@@ -2499,3 +2499,83 @@ body:has(.daw-studio) .background-glow {
     padding: 4px 8px;
   }
 }
+
+/* --- Piano Roll Modal ----------------------------------------- */
+.piano-roll-modal .daw-modal-content {
+  background: #101223;
+  border: 1px solid rgba(131, 56, 236, 0.5);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 30px rgba(131, 56, 236, 0.2);
+}
+
+.pr-key {
+  height: 20px;
+  border-bottom: 1px solid #ddd;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #333;
+  cursor: pointer;
+  user-select: none;
+}
+.pr-key.white {
+  background: #f8f9fa;
+}
+.pr-key.white:hover {
+  background: #e9ecef;
+}
+.pr-key.black {
+  background: linear-gradient(180deg, #32364a 0%, #1e2130 100%);
+  color: #fff;
+  border-bottom: 1px solid #000;
+  border-top: 1px solid #1a1c29;
+  border-left: 1px solid #1a1c29;
+  border-radius: 4px 0 0 4px;
+  width: 65%;
+  margin-left: auto;
+  box-shadow: -2px 2px 6px rgba(0,0,0,0.5);
+  z-index: 2;
+  position: relative;
+}
+.pr-key.black:hover {
+  background: linear-gradient(180deg, #3d425c 0%, #282c40 100%);
+}
+
+.pr-grid-v {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+}
+
+.pr-note {
+  position: absolute;
+  background: linear-gradient(180deg, #8338ec, #5c20b5);
+  border: 1px solid #a78bfa;
+  border-radius: 2px;
+  box-sizing: border-box;
+  cursor: grab;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+}
+.pr-note:active {
+  cursor: grabbing;
+}
+.pr-note.selected {
+  border-color: #fff;
+  background: linear-gradient(180deg, #9d4edd, #7232ca);
+  box-shadow: 0 0 6px #fff;
+}
+
+.pr-note-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  background: rgba(255,255,255,0.2);
+}

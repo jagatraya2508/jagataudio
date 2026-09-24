@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "FD7F-54EC-2371-DAE2-C1DC-A5F5-1ABB-8C23",
+    "license_type": "1m",
+    "customer_name": "Ilyas Shiddieqy",
+    "issued_date": "2026-09-10T02:50:55.789300",
+    "expiry_date": "2026-10-10T02:50:55.789300",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "kIkoLNxi2fSeY0w9l7IcGuDCs3wCKpbZ9ChrRLOqVDMSJoZfRAx2SiAm9Zv06FSh+j25J/3ePoOP1XnT4eio6Xh5ivwKjIKhyRrHqxyLSCn5DwulV0vvLz6D82HRyUMYOh1uyj9cvee6RNS/bDcmbs0hHS/La04GWB00sg0buSyKv4X7TjlcEp5gjT/C8jM0oRqOJ9de1FDpB9xfeU7nopknteJObiTNzafwU2efvgvX4lERRhAkbyddMwLpV4kUXYUg3qYOKbeJlXF97uzNewGQ8+W2cr3sjs++BhE3WK7zK2eLR8ZqYHQxY6GSyXFr5q+mvHjm42Zkr1bDKiM6vw=="
+}

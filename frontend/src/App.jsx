@@ -5542,7 +5542,7 @@ function App() {
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
-            <Layers size={18} /> DAW Studio
+            <Layers size={18} /> DAW & Sequencer
           </button>
           <button
             className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
@@ -5594,7 +5594,7 @@ function App() {
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
-            <Layers size={18} /> DAW Studio
+            <Layers size={18} /> DAW & Sequencer
           </button>
           <button
             className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}
@@ -5801,7 +5801,7 @@ function App() {
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
             onClick={() => setActiveTab('daw')}
           >
-            <Layers size={18} /> DAW Studio
+            <Layers size={18} /> DAW & Sequencer
           </button>
           <button
             className={`tab-btn ${activeTab === 'style' ? 'active' : ''}`}

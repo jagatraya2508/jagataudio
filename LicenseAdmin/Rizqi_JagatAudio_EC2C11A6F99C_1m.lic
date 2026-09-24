@@ -1,0 +1,12 @@
+{
+  "payload": {
+    "hardware_id": "EC2C-11A6-F99C-2DF0-0869-B109-35C2-CECE",
+    "license_type": "1m",
+    "customer_name": "Rizqi",
+    "issued_date": "2026-09-18T16:06:42.620476",
+    "expiry_date": "2026-10-18T16:06:42.620476",
+    "product": "JagatAudio",
+    "version": "1.1"
+  },
+  "signature": "QTh7j8oZ9/vcjLhvC8bAGvfWElJgbWttgYAtLYgNelaGI931pN/YLhqhxb0n1CwzBGh/H8bZEJFuG4blQt/u5nUqwWFGn0/XhAfCoAqxhlO2jCLVgLkXsqSAU3gkyM1Ynpgd0Cv7/Il4ZyPtW9/2k9VqOLxI7qXmKGyiBUjm5tHNcjXBxFDfz3L79/mpMJolvcsuEnWr6P3AY9BDuWuOVcKzc4QIg1BDsorm0dmbT223o+TOIkqwp60WaM84uXen/rx+FC7B2P1Fslv9wX8F2Lbuwqw3Slf3RdMby0HonibtfKpcbPi/tBdeOMlJwW0k95e7u15dJvL6nZa/DWcxBA=="
+}
